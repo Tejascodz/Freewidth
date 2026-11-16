@@ -74,3 +74,12 @@ def test_bootstrap_is_seeded(tmp_path):
     j1 = json.loads(Path(tmp_path / "o1" / "report.json").read_text())["pairs"]
     j2 = json.loads(Path(tmp_path / "o2" / "report.json").read_text())["pairs"]
     assert j1 == j2 and not math.isnan(j1[0]["d_acc_lo"])
+
+
+def test_base_tag_strips_replica_and_status():
+    from freewidth.report import base_tag, largest_model
+
+    assert base_tag("q35-4b.r1") == "q35-4b" and base_tag("q35-4b (cancelled)") == "q35-4b"
+    assert base_tag("q35-0.8b") == "q35-0.8b"
+    rows = [{"waves": [{"model": "q35-0.8b"}, {"model": "q35-4b (cancelled)"}, {"model": "q35-4b.r1"}]}]
+    assert largest_model(rows) == "q35-4b"

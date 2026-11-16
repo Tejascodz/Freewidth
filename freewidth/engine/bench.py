@@ -89,7 +89,9 @@ def _big_decoded(rec: dict, big: str | None) -> bool:
     """Did the largest model (or one of its replicas) generate tokens for this question?"""
     if big is None:
         return False
-    return any(w.get("model", "").split(".r")[0] == big and w.get("tokens", 0) > 0
+    from ..report import base_tag
+
+    return any(base_tag(w.get("model", "")) == big and w.get("tokens", 0) > 0
                for w in rec.get("waves", []))
 
 

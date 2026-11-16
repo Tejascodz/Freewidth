@@ -14,8 +14,8 @@ Each experiment's primary comparisons, sample size and pass/fail criteria are wr
 | id | question | setting | status |
 |---|---|---|---|
 | E0 | first live results | T4 x2, GSM8K, 100 q | done (runs 1–2): `docs/results-t4-gsm8k*.md` |
-| E1 | does overlap still win against a fair two-GPU big-model baseline; does repair work once its verifier is fixed | T4 x2, GSM8K, 300 q | **partial**: E1.1 failed (trade-off, not a win); E1.2 not run (time limit). See `docs/results-t4-gsm8k-E1.md` |
-| E1b | E1.1 rerun with independent per-GPU seeding (0.5.1), a process-per-GPU big_sc2, and a same-session one-GPU control; E1.2 repair in its own commit | T4 x2, GSM8K, 300 q | planned |
+| E1 | does overlap still win against a fair two-GPU big-model baseline; does repair work once its verifier is fixed | T4 x2, GSM8K, 300 q | **done**: E1.1 failed (overlap is 6.3 points less accurate, faster); E1.2 failed (repair worse than overlap). See `docs/results-t4-gsm8k-E1.md` |
+| E1b | H10: overlap with unverified quorums escalated; process-per-GPU big_sc2 with a same-session one-GPU control | T4 x2, GSM8K, 300 q | planned |
 | E2 | does it hold on harder problems | T4 x2, MATH-500, 200 q | planned |
 | E3 | does it hold for another model pair | T4 x2, Qwen3.5-2B → 4B, GSM8K, 300 q | planned |
 | E4 | does the strategy ranking change with the hardware | P100 (one GPU), GSM8K, 300 q | planned |
@@ -42,6 +42,20 @@ Each experiment's primary comparisons, sample size and pass/fail criteria are wr
 - **Overlap repeatability:** overlap run 2 vs overlap E1, on the shared 100 questions.
 - **Verifier calibration under the 0.4.1 framing:** the distribution of repair's P(Yes) on correct vs incorrect candidates.
 - **How often big_sc2's shared QuorumStop fires**, and its effect on latency.
+
+## E1b: escalate unverified quorums (H10), and a faster fair baseline
+
+**Motivation (from E1, stated before E1b runs).** Overlap accepted 28 of 300 questions on the 0.8B's unverified majority (`accept_reason = quorum`). It was right on 13; `big_sc2` was right on 26. On every other question overlap was 93.8% accurate.
+
+**H10.** Overlap with `quorum_accept: false` escalates any question whose lead answer has not been verified by the 4B, instead of accepting it on the small model's majority.
+- **Claim if:** compared with `big_sc2` (process-per-GPU), accuracy is not significantly lower (Holm p ≥ 0.05) **and** mean seconds are lower (95% interval below 0).
+- **Fail if:** either condition fails. If H10 holds, overlap becomes "big-model accuracy at lower latency"; if not, the trade-off stands.
+
+**Run.** Policies `overlap` with `quorum_accept: false`, `big_sc2` (process per GPU), and `big_sc` (one GPU, same-session control), each in its own Kaggle commit with the time budget. Same 300 questions.
+
+**Primary comparisons (Holm over the two):** overlap(H10) vs big_sc2, and overlap(H10) vs overlap(E1) on accuracy.
+
+**Not yet built:** the `quorum_accept` switch and the process-per-GPU `big_sc2`. Both come with tests before the run.
 
 ## E2: MATH-500
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2
+- E1 complete: rows, report and write-up for all three policies (overlap, big_sc2, repair) on 300 questions. Both pre-registered claims failed. The overlap gap is traced to 28 unverified quorum accepts, and H10 / E1b are pre-registered.
+- Correction: the data shows the 0.5.1 seeding bug did **not** duplicate `big_sc2`'s samples (wave token counts match on 11 of 300 questions). The fix stays.
+- `report` / `bench`: model tags are normalised (`q35-4b (cancelled)`, `q35-4b.r1` → `q35-4b`), so "largest model decoded" is correct. It previously read 0% for `big_sc2` and `repair`.
+
 ## 0.5.1 (security hardening)
 - **Server**
   - Binds to `127.0.0.1` by default, and refuses to listen on any other address without an API key unless `--insecure-no-auth` / `server.allow_unauthenticated` is set.

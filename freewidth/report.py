@@ -62,6 +62,12 @@ def load_runs(paths: list[str]) -> list[dict]:
     return out
 
 
+def base_tag(tag: str) -> str:
+    """Model tag without engine decorations: replica suffix (`q35-4b.r1`) and wave status
+    (`q35-4b (cancelled)`)."""
+    return re.sub(r"\.r\d+$", "", re.sub(r"\s*\(.*\)$", "", tag))
+
+
 def _size(tag: str) -> float:
     m = re.findall(r"(\d+(?:\.\d+)?)\s*[bB]", tag)
     return float(m[-1]) if m else 0.0
@@ -70,7 +76,7 @@ def _size(tag: str) -> float:
 def largest_model(rows: list[dict], ladder: list[str] | None = None) -> str | None:
     if ladder:
         return ladder[-1]
-    tags = {w["model"].split(".r")[0] for r in rows for w in r.get("waves", [])}
+    tags = {base_tag(w["model"]) for r in rows for w in r.get("waves", [])}
     return max(tags, key=_size) if tags else None
 
 
@@ -150,7 +156,7 @@ def summarize(rows: list[dict], big: str | None) -> list[PolicyStats]:
         js = [r.get("joules") for r in rs]
         bigrate = None
         if big:
-            bigrate = sum(any(w["model"].split(".r")[0] == big and w["tokens"] > 0
+            bigrate = sum(any(base_tag(w["model"]) == big and w.get("tokens", 0) > 0
                               for w in r.get("waves", [])) for r in rs) / len(rs)
         out.append(PolicyStats(pol, len(rs), k / len(rs), lo, hi, float(np.mean(secs)),
                                float(np.median(secs)), _p90(secs),

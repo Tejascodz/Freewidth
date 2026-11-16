@@ -32,17 +32,19 @@ curl localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
 
 ### Live results (Kaggle T4 x2, GSM8K)
 
-**E1: 300 questions, same session** ([write-up](docs/results-t4-gsm8k-E1.md)):
+**E1: 300 questions, same session** ([write-up](docs/results-t4-gsm8k-E1.md), [statistics](results/t4_gsm8k_E1_2026-11-16/report/REPORT.md)):
 
 | policy | accuracy (95% CI) | median s | mean s | mean J |
 |---|---|---|---|---|
-| **overlap** (0.8B → 4B ladder across two GPUs) | 89.3% (85.3–92.3) | **19.3** | **34.5** | **2,849** |
 | **big_sc2** (4B alone on both GPUs) | **95.7%** (92.7–97.5) | 40.2 | 43.4 | 5,713 |
+| **overlap** (0.8B → 4B ladder across two GPUs) | 89.3% (85.3–92.3) | **19.3** | **34.5** | **2,849** |
+| **repair** (Read-Locate-Fork) | 84.0% (79.4–87.7) | 22.5 | 60.0 | 3,968 |
 
-- **The pre-registered claim failed.** Overlap was not "faster at equal accuracy".
-- **What the run shows instead is a trade-off.** Overlap gives half the typical latency and half the energy, for about 6 points less accuracy. Exact paired tests are pending the per-question rows.
-- **The two-GPU baseline is probably slower than it could be** (Python threads, not processes), so the trade-off may favour the 4B even more. The process-per-GPU fix is next.
-- **Repair was cut off** by Kaggle's 12-hour limit and is still untested.
+- **Both pre-registered claims failed.**
+  - Overlap is significantly less accurate than the 4B alone: −6.3 points, Holm p = 0.0006. It is faster (9 s lower mean, half the median, half the energy). It is a trade-off, not a win.
+  - Repair is worse than overlap on accuracy and latency (Holm p = 0.005).
+- **Where the gap comes from.** 28 questions were accepted on the 0.8B's unverified majority, and overlap got only 13 of them right; the 4B got 26. On the remaining 272, overlap is 93.8% accurate. The next experiment tests escalating those questions instead (H10).
+- **The two-GPU 4B baseline was slower than one GPU on the same questions** (median 40 s vs 31 s). The likely cause is thread contention, so a process-per-GPU version is next.
 
 **Runs 1–2: 100 questions.** These earlier runs used a one-GPU 4B baseline that left the other GPU idle, which made the comparison unfair ([run 1](docs/results-t4-gsm8k.md), [run 2](docs/results-t4-gsm8k-4way.md)):
 - freewidth 80%, overlap 88%, 4B alone 93%;
@@ -82,8 +84,9 @@ The literature check behind this table found **short-m@k** and **DeepConf** alre
 - **H4, prefill verification.** Under device seconds, `pverify` beats both self-consistency on the small model and decoding with the big model at matched accuracy. This reverses Singhi et al.'s FLOPs-based conclusion for a single-tenant device.
 - **Status after E1:**
   - H6 and H7 supported (run 2).
-  - H8 not yet tested: the 0.4.0 read-framing bug, then the E1 time limit.
-  - H9 refuted: the 4B alone on both GPUs is 6.4 points more accurate than overlap on 300 questions. Overlap keeps a latency and energy advantage (half of each).
+  - H8 refuted: repair is less accurate and slower than overlap, and no better than freewidth.
+  - H9 refuted: the 4B alone is 6.3 points more accurate than overlap (Holm p = 0.0006). Overlap keeps a latency and energy advantage.
+  - H10 (escalate unverified quorums) is pre-registered for E1b.
 - **H6, overlap cuts escalation latency.** On escalated questions, `overlap` has lower median wall time than `freewidth`, because the big model starts during the first wave instead of after two failed waves. *Refuted if* escalated-question latency does not drop.
 - **H7, the veto rescues confident-wrong answers.** `overlap` is more accurate than `freewidth` on questions the small model answers with a quorum, at mean time within 15% of `freewidth`. *Refuted if* the accuracy gain is zero or the time cost is larger.
 - **H8, read-locate-fork replaces writing.** On questions where the small model is unsure, `repair` reaches at least the accuracy of `freewidth` (which escalates to big-model decoding) with lower mean latency, and the big model writes a full answer on fewer than half as many questions. *Refuted if* repaired batches are no more accurate than fresh small-model batches.
