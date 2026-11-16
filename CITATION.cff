@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use FreeWidth, please cite it as below."
+title: "FreeWidth: hardware-conditional test-time compute scaling"
+type: software
+authors:
+  - given-names: Tejas
+version: 0.5.1
+date-released: 2026-11-16
+license: MIT
+keywords:
+  - test-time compute
+  - self-consistency
+  - inference
+  - LLM serving
+  - verification

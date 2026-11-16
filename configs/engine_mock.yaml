@@ -1,0 +1,8 @@
+# Simulated ladder for trying the engine and server without a GPU.
+#   python -m freewidth serve --config configs/engine_mock.yaml
+engine:
+  ladder:
+    - {tag: sim-0.8b, backend: mock, params_b: 0.8}
+    - {tag: sim-4b,   backend: mock, params_b: 4.0}
+  sampling: {max_new_tokens: 512}
+  calibration: {dir: runs/calibration_mock}

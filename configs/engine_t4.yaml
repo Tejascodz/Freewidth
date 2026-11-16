@@ -1,0 +1,32 @@
+# Live engine on Kaggle T4 x2: small model on GPU 0, big model on GPU 1.
+#   python -m freewidth calibrate --config configs/engine_t4.yaml      # one-time, ~10-20 min
+#   python -m freewidth solve     --config configs/engine_t4.yaml "What is 17 * 23?"
+#   python -m freewidth serve     --config configs/engine_t4.yaml
+#   python -m freewidth bench     --config configs/engine_t4.yaml --dataset gsm8k --limit 100
+# Check model ids on huggingface.co first. T4 has no bfloat16, so float16.
+engine:
+  ladder:
+    - {tag: q35-0.8b, backend: hf, model_id: Qwen/Qwen3.5-0.8B, device: "cuda:0", dtype: float16, enable_thinking: false}
+    - {tag: q35-4b,   backend: hf, model_id: Qwen/Qwen3.5-4B,   device: "cuda:1", dtype: float16, enable_thinking: false,
+       replica_devices: ["cuda:0"]}   # second copy for big_sc2 only, loaded on first use
+  policy:
+    name: freewidth        # freewidth | hwave | sc | single | overlap | repair | big_sc | big_sc2
+    tau: 0.9               # Beta-posterior confidence needed to stop
+    max_waves: 2           # waves per model before verifying / escalating
+    quorum: true           # live QuorumStop inside each wave
+    verify: true           # prefill verification by the next model before escalating
+    verify_accept: 0.6     # minimum P(Yes) to accept a verified candidate
+    width: free            # 'free' = calibrated free width, or a fixed integer
+    max_width: 32
+  sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 1024}
+  calibration:
+    dir: calibration/t4
+    auto: true
+    eps: 0.25
+    widths: [1, 2, 4, 8, 16, 32]
+    gen_lens: [1, 32, 128]
+    prompt_lens: [128, 512]
+    repeats: 2
+    warmup: true
+  server: {host: 0.0.0.0, port: 8000, model_name: freewidth, max_queue: 16, request_timeout_s: 900}
+  log_json: false

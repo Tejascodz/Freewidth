@@ -1,0 +1,24 @@
+# Control for hypothesis H2: same setup, pure full-attention models (Qwen3).
+# Compare its report with the hybrid run: does the KV term matter less for hybrids?
+output_dir: runs/t4_dense_math500
+dataset: {name: math500, split: test, limit: 150, seed: 0}
+prompt:
+  system: "You are a careful problem solver."
+  template: "{question}\n\nReason step by step, then give the final answer within \\boxed{{}}."
+sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 1024}
+bank: {samples_per_question: 32, wave_width: 16, keep_text: true}
+profile:
+  widths: [1, 2, 4, 8, 16, 32, 64]
+  gen_lens: [1, 64, 256]
+  prompt_lens: [128, 1024]
+  typical_prompt_len: 160
+  repeats: 2
+verify:
+  pairs:
+    - {small: q3-0.6b, big: q3-4b}
+  batch: 8
+analysis: {trials: 20, bootstrap: 500, static_batch: true, free_width_eps: 0.25}
+models:
+  - {tag: q3-0.6b, backend: hf, model_id: Qwen/Qwen3-0.6B, device: "cuda:1", dtype: float16, enable_thinking: false}
+  - {tag: q3-1.7b, backend: hf, model_id: Qwen/Qwen3-1.7B, device: "cuda:1", dtype: float16, enable_thinking: false}
+  - {tag: q3-4b,   backend: hf, model_id: Qwen/Qwen3-4B,   device: "cuda:1", dtype: float16, enable_thinking: false}

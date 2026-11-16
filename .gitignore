@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# run outputs (results worth keeping are copied into results/ on purpose)
+runs/
+calibration/
+*.log
+*.tgz
+*.zip
+
+# secrets: never commit keys or tokens
+.env
+.env.*
+*.pem
+*.key
+kaggle.json
+.netrc
+.huggingface/

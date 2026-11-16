@@ -1,0 +1,58 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"   # weekly, to catch newly published CVEs in dependencies
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install scanners
+        run: pip install bandit[toml] pip-audit detect-secrets
+      - name: Static analysis (bandit, medium severity and above fails)
+        run: bandit -c pyproject.toml -r freewidth -ll
+      - name: Known vulnerabilities in dependencies (pip-audit)
+        run: pip-audit -r requirements.txt -r requirements-dev.txt --progress-spinner off
+      - name: No secrets committed (detect-secrets)
+        run: |
+          detect-secrets scan --all-files --exclude-files '^results/.*\.jsonl$' > /tmp/secrets.json
+          python - <<'PY'
+          import json, sys
+          found = json.load(open("/tmp/secrets.json"))["results"]
+          # the only allowed hit: an environment-variable *name* in an example config
+          found = {f: v for f, v in found.items() if f != "configs/remote_escalation.yaml"}
+          if found:
+              print(json.dumps(found, indent=2))
+              sys.exit("possible secrets committed")
+          print("no secrets found")
+          PY
+
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: python, actions
+          queries: security-extended
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3

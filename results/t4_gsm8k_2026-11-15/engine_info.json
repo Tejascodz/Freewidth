@@ -1,0 +1,31 @@
+{
+  "loaded": true,
+  "policy": {
+    "name": "freewidth",
+    "tau": 0.9,
+    "max_waves": 2,
+    "quorum": true,
+    "min_finished": 2,
+    "width": "free",
+    "max_width": 32,
+    "verify": true,
+    "verify_accept": 0.6,
+    "top_c": 4,
+    "sc_n": 8,
+    "free_form_fallback": true
+  },
+  "ladder": [
+    {
+      "tag": "q35-0.8b",
+      "device": "Tesla T4",
+      "free_width": 16,
+      "calibration_r2": 0.997754710877434
+    },
+    {
+      "tag": "q35-4b",
+      "device": "Tesla T4",
+      "free_width": 4,
+      "calibration_r2": 0.9973677592006264
+    }
+  ]
+}

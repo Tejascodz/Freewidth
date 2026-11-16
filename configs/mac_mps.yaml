@@ -1,0 +1,16 @@
+# Apple Silicon (unified memory) as a third hardware regime. No energy readings
+# (powermetrics needs sudo), so only seconds are measured.
+output_dir: runs/mac_gsm8k
+dataset: {name: gsm8k, split: test, limit: 100, seed: 0}
+sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 512}
+bank: {samples_per_question: 16, wave_width: 8, keep_text: true}
+profile:
+  widths: [1, 2, 4, 8, 16, 32]
+  gen_lens: [1, 64, 192]
+  prompt_lens: [128, 768]
+  typical_prompt_len: 140
+  repeats: 2
+analysis: {trials: 20, bootstrap: 500, static_batch: true}
+models:
+  - {tag: q35-0.8b, backend: hf, model_id: Qwen/Qwen3.5-0.8B, device: mps, dtype: float16, enable_thinking: false}
+  - {tag: q35-2b,   backend: hf, model_id: Qwen/Qwen3.5-2B,   device: mps, dtype: float16, enable_thinking: false}

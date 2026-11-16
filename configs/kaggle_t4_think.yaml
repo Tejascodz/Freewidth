@@ -1,0 +1,20 @@
+# "Think longer" axis: thinking mode with a hard token budget and budget forcing
+# (s1-style: when the budget runs out, close the thinking block and force an answer).
+# Writes into the SAME run directory as the hybrid config, so `analyze` puts these
+# variants on the same frontier as the non-thinking models. Run after that config.
+#
+#   python -m freewidth profile --config configs/kaggle_t4_think.yaml   # copies the 0.8B fit
+#   python -m freewidth bank    --config configs/kaggle_t4_think.yaml --max-hours 11
+#   python -m freewidth analyze --config configs/kaggle_t4_hybrid.yaml
+output_dir: runs/t4_hybrid_math500
+dataset: {name: math500, split: test, limit: 150, seed: 0}
+prompt:
+  system: "You are a careful problem solver."
+  template: "{question}\n\nReason step by step, then give the final answer within \\boxed{{}}."
+sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 1024}
+bank: {samples_per_question: 16, wave_width: 16, keep_text: true}
+models:
+  - {tag: q35-0.8b-think1k, backend: hf, model_id: Qwen/Qwen3.5-0.8B, device: "cuda:0", dtype: float16,
+     enable_thinking: true, answer_tokens: 64, sampling: {max_new_tokens: 1024}, profile_from: q35-0.8b}
+  - {tag: q35-0.8b-think2k, backend: hf, model_id: Qwen/Qwen3.5-0.8B, device: "cuda:0", dtype: float16,
+     enable_thinking: true, answer_tokens: 64, sampling: {max_new_tokens: 2048}, profile_from: q35-0.8b}

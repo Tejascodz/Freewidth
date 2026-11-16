@@ -1,0 +1,33 @@
+# Faster bank generation + a continuous-batching device profile, via a local vLLM
+# server on the same T4 (see scripts/serve_vllm.sh). One model per server, so run
+# with --only <tag> after starting the matching server.
+#
+# Device cost comes from the profiler fit, never from bank wall-clock, so a bank
+# made with vLLM can still be priced with an HF profile and vice versa.
+output_dir: runs/t4_vllm_gsm8k
+dataset: {name: gsm8k, split: test, limit: 500, seed: 0}
+sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 768}
+bank: {samples_per_question: 64, wave_width: 32, keep_text: true}
+profile:
+  widths: [1, 2, 4, 8, 16, 32, 64, 128]
+  gen_lens: [1, 64, 256]
+  prompt_lens: [128, 1024]
+  typical_prompt_len: 160
+  repeats: 2
+analysis: {trials: 20, bootstrap: 500, static_batch: false, free_width_eps: 0.25}
+models:
+  - tag: q3-0.6b
+    backend: openai
+    model_id: Qwen/Qwen3-0.6B
+    base_url: http://localhost:8000/v1
+    local: true
+    extra_body: {chat_template_kwargs: {enable_thinking: false}}
+    # FLOP accounting needs the architecture; copy from the model's config.json
+    spec: {params: 6.0e8, n_layers: 28, n_heads: 16, n_kv_heads: 8, head_dim: 128}
+  - tag: q3-4b
+    backend: openai
+    model_id: Qwen/Qwen3-4B
+    base_url: http://localhost:8000/v1
+    local: true
+    extra_body: {chat_template_kwargs: {enable_thinking: false}}
+    spec: {params: 4.0e9, n_layers: 36, n_heads: 32, n_kv_heads: 8, head_dim: 128}

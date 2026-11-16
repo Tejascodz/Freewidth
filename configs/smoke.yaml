@@ -1,0 +1,13 @@
+# Full pipeline on a simulated device. No GPU, no downloads.
+#   python -m freewidth smoke
+output_dir: runs/smoke
+dataset: {name: toy, limit: 120, seed: 0}
+sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 512}
+bank: {samples_per_question: 32, wave_width: 16, keep_text: true}
+profile: {widths: [1, 2, 4, 8, 16, 32, 64], gen_lens: [1, 64, 256], prompt_lens: [64, 512], typical_prompt_len: 80, repeats: 2}
+verify: {pairs: [{small: sim-0.8b, big: sim-4b}]}
+analysis: {trials: 8, bootstrap: 200}
+models:
+  - {tag: sim-0.8b, backend: mock, params_b: 0.8}
+  - {tag: sim-2b,   backend: mock, params_b: 2.0}
+  - {tag: sim-4b,   backend: mock, params_b: 4.0, hybrid_ratio: 0.75}

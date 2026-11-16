@@ -1,0 +1,32 @@
+# Main experiment: Qwen3.5 small models (hybrid Gated DeltaNet + full attention)
+# on one Kaggle T4. Profile and bank both run with HF transformers (static batching).
+#
+#   python -m freewidth profile --config configs/kaggle_t4_hybrid.yaml
+#   python -m freewidth bank    --config configs/kaggle_t4_hybrid.yaml --max-hours 11
+#   python -m freewidth verify  --config configs/kaggle_t4_hybrid.yaml
+#   python -m freewidth analyze --config configs/kaggle_t4_hybrid.yaml
+#
+# Check the model ids on huggingface.co before running; T4 has no bfloat16, so float16.
+output_dir: runs/t4_hybrid_math500
+dataset: {name: math500, split: test, limit: 150, seed: 0}
+prompt:
+  system: "You are a careful problem solver."
+  template: "{question}\n\nReason step by step, then give the final answer within \\boxed{{}}."
+sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 1024}
+bank: {samples_per_question: 32, wave_width: 16, keep_text: true}
+profile:
+  widths: [1, 2, 4, 8, 16, 32, 64]
+  gen_lens: [1, 64, 256]
+  prompt_lens: [128, 1024]
+  typical_prompt_len: 160
+  repeats: 2
+verify:
+  pairs:
+    - {small: q35-0.8b, big: q35-4b}
+    - {small: q35-2b, big: q35-4b}
+  batch: 8
+analysis: {trials: 20, bootstrap: 500, static_batch: true, free_width_eps: 0.25}
+models:
+  - {tag: q35-0.8b, backend: hf, model_id: Qwen/Qwen3.5-0.8B, device: "cuda:0", dtype: float16, enable_thinking: false}
+  - {tag: q35-2b,   backend: hf, model_id: Qwen/Qwen3.5-2B,   device: "cuda:0", dtype: float16, enable_thinking: false}
+  - {tag: q35-4b,   backend: hf, model_id: Qwen/Qwen3.5-4B,   device: "cuda:0", dtype: float16, enable_thinking: false}

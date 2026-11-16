@@ -1,0 +1,32 @@
+# Kaggle P100 (one 16 GB GPU): both models on one device, so only single-device policies make
+# sense (freewidth, hwave, sc, big_sc). Different memory bandwidth and compute than a T4, so the
+# free widths and the strategy ranking can change. That is the hardware-conditional claim under test.
+# Experimental: Triton kernels for Qwen3.5's linear attention may not support the P100 (sm_60), in which
+# case transformers falls back to a slow PyTorch path. If calibration is very slow, use the dense pair:
+#   sed -i 's/Qwen3.5-0.8B/Qwen3-0.6B/; s/Qwen3.5-4B/Qwen3-4B/' configs/engine_p100.yaml
+#   CONFIG=configs/engine_p100.yaml POLICIES=freewidth,big_sc bash scripts/kaggle_experiment.sh
+engine:
+  ladder:
+    - {tag: q35-0.8b, backend: hf, model_id: Qwen/Qwen3.5-0.8B, device: "cuda:0", dtype: float16, enable_thinking: false}
+    - {tag: q35-4b,   backend: hf, model_id: Qwen/Qwen3.5-4B,   device: "cuda:0", dtype: float16, enable_thinking: false}
+  policy:
+    name: freewidth        # freewidth | hwave | sc | single | overlap | repair | big_sc | big_sc2
+    tau: 0.9               # Beta-posterior confidence needed to stop
+    max_waves: 2           # waves per model before verifying / escalating
+    quorum: true           # live QuorumStop inside each wave
+    verify: true           # prefill verification by the next model before escalating
+    verify_accept: 0.6     # minimum P(Yes) to accept a verified candidate
+    width: free            # 'free' = calibrated free width, or a fixed integer
+    max_width: 32
+  sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 1024}
+  calibration:
+    dir: calibration/p100
+    auto: true
+    eps: 0.25
+    widths: [1, 2, 4, 8, 16, 32]
+    gen_lens: [1, 32, 128]
+    prompt_lens: [128, 512]
+    repeats: 2
+    warmup: true
+  server: {host: 0.0.0.0, port: 8000, model_name: freewidth, max_queue: 16, request_timeout_s: 900}
+  log_json: false

@@ -1,0 +1,10 @@
+# Same engine with dense full-attention models (Qwen3): the safer choice if Qwen3.5
+# kernels are slow on T4.
+engine:
+  ladder:
+    - {tag: q3-0.6b, backend: hf, model_id: Qwen/Qwen3-0.6B, device: "cuda:0", dtype: float16, enable_thinking: false}
+    - {tag: q3-4b,   backend: hf, model_id: Qwen/Qwen3-4B,   device: "cuda:1", dtype: float16, enable_thinking: false,
+       replica_devices: ["cuda:0"]}
+  policy: {name: freewidth, tau: 0.9, max_waves: 2, quorum: true, verify: true, verify_accept: 0.6}
+  sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 1024}
+  calibration: {dir: calibration/t4_dense}

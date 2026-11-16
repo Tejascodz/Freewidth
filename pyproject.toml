@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freewidth"
+version = "0.5.1"
+description = "Hardware-aware test-time compute for LLMs: measured per-GPU free width, small-to-big model ladders with live early stopping and cross-GPU verification, and pre-registered statistical evaluation."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Tejas"}]
+keywords = ["llm", "inference", "test-time compute", "self-consistency", "gpu", "benchmarking"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = ["numpy>=1.26", "scipy>=1.11", "matplotlib>=3.8", "pyyaml>=6.0", "pydantic>=2.6"]
+
+[project.optional-dependencies]
+gpu = ["torch", "transformers>=4.57", "accelerate", "datasets", "nvidia-ml-py", "math-verify[antlr4_13_2]"]
+serve = ["fastapi>=0.110", "uvicorn>=0.29"]
+dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.6", "fastapi>=0.110", "uvicorn>=0.29"]
+
+[project.urls]
+Repository = "https://github.com/Tejascodz/freewidth"
+Issues = "https://github.com/Tejascodz/freewidth/issues"
+
+[project.scripts]
+freewidth = "freewidth.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["freewidth*"]
+
+[tool.setuptools.package-data]
+freewidth = ["py.typed"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501", "B008", "SIM105", "SIM108", "UP007", "B905"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore:.*httpx.*:Warning"]
+
+[tool.bandit]
+# B311: `random` is used only for reproducible sampling and resampling, never for anything
+# security-related. B101: asserts appear in tests only.
+skips = ["B311", "B101"]
+exclude_dirs = ["tests"]
