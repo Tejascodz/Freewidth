@@ -1,0 +1,12 @@
+# E6 free-width atlas on Kaggle P100 (one 16 GB GPU, no tensor cores; much higher memory bandwidth
+# than a T4). Dense models only: Qwen3.5's Triton kernels may not run on the P100 (sm_60).
+eps: 0.25
+widths: [1, 2, 4, 8, 16, 32, 64]
+gen_lens: [1, 32, 128]
+prompt_lens: [128, 512]
+repeats: 2
+operating_points: [[32, 128], [128, 128], [128, 512]]
+settings:
+  - {name: q3-0.6b-fp16,  model_id: Qwen/Qwen3-0.6B, dtype: float16, arch: dense}
+  - {name: q3-1.7b-fp16,  model_id: Qwen/Qwen3-1.7B, dtype: float16, arch: dense}
+  - {name: q3-4b-fp16,    model_id: Qwen/Qwen3-4B,   dtype: float16, arch: dense}

@@ -11,7 +11,7 @@
 
 FreeWidth does three things:
 
-- It **measures** the free width per device and model by fitting a parametric cost curve to timed decodes. On an NVIDIA T4: 16 for Qwen3.5-0.8B and 4 for Qwen3.5-4B, R² ≥ 0.997.
+- It **measures** the free width per device and model by fitting a parametric cost curve to timed decodes. On an NVIDIA T4: 16 for Qwen3.5-0.8B and 4 for Qwen3.5-4B, R² ≥ 0.997. The criterion is the sample-axis counterpart of *near-free parallelism* (He et al. 2026), which uses the same latency test for decode positions per forward pass.
 - It **runs** small-to-large model ladders live: waves sized to the free width, an in-wave Bayesian early stop (QuorumStop), and single-pass prefill verification by the larger model, streamed across a second GPU.
 - It **evaluates** them under a pre-registered protocol: exact paired tests with Holm correction, Wilson intervals, paired bootstrap and power analysis.
 
@@ -67,6 +67,11 @@ T(w, L, P) = e + d·w·P + a·L + b·w·L + g·w·(L·P + L(L+1)/2)
 with non-negative least squares over timed, forced-length decodes. The grid is widths {1, 2, 4, 8, 16, 32} × generation lengths {1, 32, 128} × prompt lengths {128, 512}, with a warm-up pass per shape (Triton JIT) and 2 repeats. Calibration is repeated automatically if R² < 0.97. The `a·L` term is the per-step cost that does not depend on width (dominated by reading the weights); the `w` terms are the per-sequence work. Energy is fitted the same way from NVML counters.
 
 **Definition.** The *free width* is the largest *w* with `T(w) ≤ (1 + ε)·T(1)` at the deployment's typical prompt and generation length (ε = 0.25).
+
+**Relation to prior definitions.**
+- He et al. (2026) define *near-free parallelism* with the same test, `T(N) ≤ (1 + ε)·T(1)` with ε = 0.2. There, *N* is the number of decode positions in one forward pass (speculative verification, multi-token prediction, diffusion blocks), on datacenter GPUs with vLLM and SGLang. They show that a roofline estimate can over-predict the boundary by up to 23×.
+- Serving systems use the analogous batch-axis notion of a saturation batch size, or "knee" (*Mind the Memory Gap*, 2025).
+- Free width applies the same latency criterion to the number of independent samples per question, on consumer GPUs, as a scheduling parameter for test-time scaling.
 
 **Measurement** (Kaggle T4, 16 GB, fp16, transformers + flash-linear-attention; identical across three independent sessions):
 
@@ -253,6 +258,7 @@ Runs 1–2 used 100 questions each and the one-GPU `big_sc` baseline ([Appendix 
 | H8 | Read-Locate-Fork replaces large-model writing | refuted | §5.2–5.3 |
 | H9 | The large model is better used as a reader than a writer | refuted | −6.3 points, Holm p = 6.2×10⁻⁴ |
 | H10 | Escalating uncertain-verifier quorums closes the gap | pending | E1b, [Appendix A](#appendix-a) |
+| H11–H14 | Free-width atlas: roofline gap, size dependence, hybrid vs dense, predictability | pending | E6, [Appendix A](#appendix-a) |
 | H1–H5 | Offline cost-model and strategy hypotheses | not yet run | [Appendix C](#appendix-c) |
 
 ## 6. Discussion
@@ -270,11 +276,22 @@ Runs 1–2 used 100 questions each and the one-GPU `big_sc` baseline ([Appendix 
 - Use `overlap` when latency or energy is constrained and a few points of accuracy are acceptable.
 - Do not use `repair` in its current form.
 
-**Novelty, stated narrowly.** Latency-aware test-time scaling, prefill verification, speculative cascades and early-stopped self-consistency all have prior work (§10). This repository contributes:
-- free width measured per device and per model, and used to schedule live;
-- QuorumStop inside a lock-step wave;
-- concurrent cross-GPU verification with veto and speculative escalation, measured end to end;
-- a fully pre-registered evaluation that reports its negative results.
+**Novelty, stated narrowly.** A literature review (November 2026, §10) found prior work for every individual mechanism:
+
+| component | closest prior work | status here |
+|---|---|---|
+| Latency test for "free" parallelism | Near-free parallelism (He et al. 2026); saturation and knee batch sizes in serving (*Mind the Memory Gap* 2025; SLIM 2026) | not new; FreeWidth applies it to the sample axis of test-time scaling |
+| Parallel test-time scaling on memory-bound devices | Latency-aware TTS (2025); EdgeReasoning (2025); Efficient Reasoning on the Edge (2026); mobile-NPU TTS (EuroSys 2026); FastTTS (ASPLOS 2026); *Sample Count Is Not Enough* (2026) | not new |
+| Resource-aware sampling budgets | ATEST (Oct 2026, live GPU-load energy cost); ATTS (ICLR 2026) | not new; ATEST adapts to load, FreeWidth measures a static device and model property |
+| Early stopping of self-consistency | Adaptive-Consistency, ESC, RASC, ReASC, CASE; in-batch truncation: ST-BoN, Speculative Rejection | QuorumStop is an engineering variant (posterior stop over finishing order in a static batch) |
+| Small model with large-model verification | Speculative cascades, SplitReason, MSV, MARS | `overlap` is an integration on two GPUs, measured end to end |
+| Error localisation and repair | StepBack, decision-token correction, SpecAgent | `repair` was tested and failed |
+
+What remains distinct is narrow:
+1. **An end-to-end, pre-registered evaluation** of these mechanisms together on free consumer hardware, including the negative results.
+2. **Measurements on hybrid Gated-DeltaNet models on consumer GPUs**, a setting the near-free parallelism study does not cover. The planned free-width atlas (E6, [Appendix A](#appendix-a)) tests whether its principles hold on the sample axis there.
+
+This repository should be read as a careful systems evaluation, not as a new algorithm.
 
 ## 7. Limitations and threats to validity
 
@@ -310,7 +327,7 @@ Everything runs on free compute. The per-question rows and generated reports for
 ```bash
 git clone https://github.com/Tejascodz/freewidth && cd freewidth
 pip install -r requirements-dev.txt
-make lint test                     # 97 tests on a simulated device; no GPU needed
+make lint test                     # 103 tests on a simulated device; no GPU needed
 
 # recompute every statistic in Section 5 from the committed rows
 python -m freewidth report results/t4_gsm8k_E1_2026-11-16 --out /tmp/e1 \
@@ -323,6 +340,8 @@ python -m freewidth report results/t4_gsm8k_E1_2026-11-16 --out /tmp/e1 \
 |---|---|---|
 | E1 (`overlap`, `big_sc2`, `repair`) | `bash scripts/kaggle_final.sh` | about 11.8 h |
 | E1b / H10 | `bash scripts/kaggle_h10.sh` | about 3.5–4 h (capped at 5 h) |
+| E6 free-width atlas (T4 x2, calibration only) | `bash scripts/kaggle_atlas_t4.sh` | about 2–2.5 h (capped at 3.5 h) |
+| E6 free-width atlas (P100) | `bash scripts/kaggle_atlas_p100.sh` | about 1 h (capped at 1.5 h) |
 | any pre-registered experiment | `CONFIG=... DATASET=... POLICIES=... bash scripts/kaggle_experiment.sh` | varies |
 
 **How the scripts protect a run:**
@@ -358,11 +377,23 @@ python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limi
 - **Container:** non-root Docker image.
 
 **Testing and CI.**
-- 97 tests run on a simulated device: controller logic, policies, statistics, server security and limits, and configs. The real `transformers` path is tested on a tiny model on CPU.
+- 103 tests run on a simulated device: controller logic, policies, statistics, server security and limits, and configs. The real `transformers` path is tested on a tiny model on CPU.
 - CI runs on Python 3.10–3.12 with SHA-pinned Actions and read-only permissions.
 - A security workflow runs bandit, pip-audit, detect-secrets and CodeQL on every push and weekly. Dependabot is enabled.
 
 ## 10. Related work
+
+**Near-free parallelism and batch saturation.**
+- He et al. (2026) define near-free parallelism, `T(N) ≤ (1+ε)·T(1)`, for decode positions per forward pass. They explain its boundary by idle compute for dense FFNs, and by kernel granularity for MoE and attention. They also show the roofline over-predicts by up to 23×.
+- *Mind the Memory Gap* (2025) finds that large-batch decoding stays memory-bound. It attributes part of the gap to the hardware limit to CPU idle time between decode steps, and it recommends a knee batch size.
+- SLIM (2026), Vidur (2024), GenZ, LLMCompass, NeuSight and KernelSight-LM (2026) predict LLM latency and throughput from profiles or datasheets, some on unseen GPUs.
+- FreeWidth's free width is the sample-axis instance of the same idea. The atlas experiment tests these principles on hybrid models and consumer GPUs instead of re-deriving them.
+
+**Parallel test-time scaling on constrained hardware.**
+- Latency-aware TTS (2025) shows that latency-optimal and compute-optimal test-time scaling differ.
+- EdgeReasoning (2025, Jetson Orin), Efficient Reasoning on the Edge (2026, Qualcomm), mobile-NPU TTS (EuroSys 2026) and FastTTS (ASPLOS 2026) exploit memory-bound decoding for parallel sampling on edge devices.
+- *Sample Count Is Not Enough* (2026) shows that batched generation of 8 candidates uses about 4.6–4.9× less GPU energy than 8 serial calls on A100s.
+- ATEST (2026) adapts the number of samples to live GPU load and energy cost. ATTS (ICLR 2026) introduces asynchronous arithmetic intensity and conformal-prediction-based asynchronous scaling.
 
 **Compute-optimal test-time scaling.**
 - Snell et al. (2024) and Wu et al. (2024) establish compute-optimal inference under FLOPs.
@@ -370,7 +401,7 @@ python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limi
 - Latency-aware test-time scaling (EMNLP Findings 2025) shows that compute-optimal is not latency-optimal on datacenter GPUs.
 - FreeWidth measures the single-tenant device curve directly and schedules on it live.
 
-**Early-stopped sampling.**
+**Early-stopped sampling.** (ESC, RASC, ReASC, CASE, ST-BoN and Speculative Rejection also stop or prune samples early.)
 - Adaptive-Consistency (Aggarwal et al. 2023) stops sequential sampling with a Beta criterion.
 - short-m@k (Hassid et al. 2025) stops when the first *m* of *k* finish.
 - DeepConf (Fu et al. 2026) filters by trace confidence.
@@ -394,6 +425,19 @@ python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limi
 ## 11. References
 
 - Aggarwal et al. *Let's Sample Step by Step: Adaptive-Consistency for Efficient Reasoning.* EMNLP 2023.
+- Agrawal et al. *Vidur: A Large-Scale Simulation Framework for LLM Inference.* MLSys 2024. arXiv:2405.05465.
+- Bondarenko et al. *Efficient Reasoning on the Edge.* arXiv:2603.16867.
+- *FastTTS: Accelerating Test-Time Scaling for Edge LLM Reasoning.* ASPLOS 2026. arXiv:2509.00195.
+- He, Zhang, Liu, Zhou, Liu. *How Much Parallelism Is "Free"? A Principle of Near-Free Parallelism for Parallel Decoding.* arXiv:2605.30851.
+- Hao et al. *Scaling LLM Test-Time Compute with Mobile NPU on Smartphones.* EuroSys 2026. arXiv:2509.23324.
+- Kashaniyan, Jannesari. *ATEST: Adaptive Resource-Aware Test-Time Scaling for LLM Inference.* arXiv:2610.25519.
+- Kubwimana, Huang. *EdgeReasoning: Characterizing Reasoning LLM Deployment on Edge GPUs.* arXiv:2511.01866.
+- *KernelSight-LM: A Kernel-Level LLM Inference Simulator.* arXiv:2606.28565.
+- *Mind the Memory Gap: Unveiling GPU Bottlenecks in Large-Batch LLM Inference.* arXiv:2503.08311.
+- *Sample Count Is Not Enough: Candidate-Generation Strategy Shapes the Energy and Performance of LLM Test-Time Scaling.* arXiv:2609.19499.
+- *SLIM: Saturation-Aware Lightweight Performance Modeling for LLM Serving.* arXiv:2607.29575.
+- Sun et al. *Fast Best-of-N Decoding via Speculative Rejection.* NeurIPS 2024. arXiv:2410.20290.
+- Xiong et al. *ATTS: Asynchronous Test-Time Scaling via Conformal Prediction.* ICLR 2026. arXiv:2509.15148.
 - Chen, Zaharia, Zou. *FrugalGPT.* 2023.
 - Fu, Wang, Zhang, Tian, Zhao. *Deep Think with Confidence.* ICLR 2026. arXiv:2508.15260.
 - Hassid, Synnaeve, Adi, Schwartz. *Don't Overthink It: Preferring Shorter Thinking Chains.* arXiv:2505.17813.
@@ -443,6 +487,7 @@ Each experiment's primary comparisons, sample size and pass/fail criteria are wr
 | E3 | does it hold for another model pair | T4 x2, Qwen3.5-2B → 4B, GSM8K, 300 q | planned |
 | E4 | does the strategy ranking change with the hardware | P100 (one GPU), GSM8K, 300 q | planned |
 | E5 | do hybrid (linear-attention) models change the small-vs-big trade-off (H2) | T4 x2, dense Qwen3 0.6B → 4B, GSM8K, 300 q | planned |
+| E6 | free-width atlas: do the near-free-parallelism principles hold on the sample axis for hybrid models on consumer GPUs (H11–H14) | T4 x2 and P100, 10 + 3 settings, calibration only | **ready**: `scripts/kaggle_atlas_t4.sh`, `scripts/kaggle_atlas_p100.sh` |
 
 #### E1: fair baseline and the repair retest
 
@@ -540,15 +585,55 @@ CONFIG=configs/engine_t4_dense.yaml POLICIES=overlap,big_sc2,freewidth \
 ```
 **Claim.** Free widths and the overlap vs big-model trade-off differ between hybrid Qwen3.5 and dense Qwen3 at similar sizes. This is reported descriptively, since model families also differ in accuracy.
 
+#### E6: free-width atlas (H11–H14)
+
+**Motivation.**
+- Near-free parallelism (He et al. 2026) and batch-saturation studies (*Mind the Memory Gap* 2025) establish the latency criterion. They show that roofline estimates over-predict it, and explain the boundary by idle compute, kernel granularity and CPU overhead.
+- They study decode positions per forward pass, or serving batches, on datacenter GPUs with vLLM and SGLang, with dense and MoE models.
+- E6 asks whether their conclusions hold on the **sample axis** of test-time scaling, for **hybrid Gated-DeltaNet** models, on **consumer GPUs**, with the transformers stack. Since these are replications and extensions, a failure to replicate is reported as such.
+
+**Run.** Calibration only; no benchmark questions.
+
+| | T4 x2 (`configs/atlas_t4.yaml`) | P100 (`configs/atlas_p100.yaml`) |
+|---|---|---|
+| fp16, hybrid | Qwen3.5 0.8B, 2B, 4B | — (kernel support uncertain on sm_60) |
+| fp16, dense | Qwen3 0.6B, 1.7B, 4B | Qwen3 0.6B, 1.7B, 4B |
+| 4-bit NF4 | Qwen3.5 0.8B, 4B, 9B; Qwen3 8B | — |
+
+- **Grid:** widths 1–64 (doubling), generation lengths {1, 32, 128}, prompt lengths {128, 512}, 2 repeats each.
+- **Operating points (L, P):** (32, 128), (128, 128), (128, 512).
+- **Measured free width:** the largest measured width whose mean time is within 1.25× of a single sample. When the widest measured width still qualifies, the value is flagged as censored (a lower bound).
+- **Sharding:** one process per GPU, so there is no shared Python interpreter.
+
+**Hypotheses and criteria.**
+- **H11 (replication: the roofline over-predicts).** A weights-only roofline predicts a free width of (1 + ε) · peak FLOP/s · bytes per parameter / (2 · bandwidth), about 254 for fp16 on a T4, independent of model size.
+  - *Supported* if the roofline over-predicts the measured free width by at least 4× in every T4 fp16 measurement.
+  - *Refuted* if the median over-prediction is below 2×.
+- **H12 (free width falls with model size).** Within each group of the same GPU, architecture, format and operating point that has 3 or more models, the Spearman correlation between weight bytes and free width is negative.
+  - *Supported* if it is negative in at least 80% of groups.
+  - *Refuted* if it is negative in 50% or fewer.
+  - A size dependence would contradict the size-independent idle-compute term for dense FFNs, and point to attention, recurrent state or per-step overhead as the binding limit.
+- **H13 (predictability, exploratory).** A ridge regression on setting features, evaluated leave-one-model-out (fp16 and 4-bit versions of a model are held out together), reaches a mean absolute error of at most 0.5 in log2 units and beats both the roofline and the median baseline. It is reported regardless of outcome. With only 2 GPU types, leave-one-GPU-out results are descriptive only.
+- **H14 (hybrid vs dense).** At matched size (0.8B vs 0.6B, 2B vs 1.7B, 4B vs 4B) and P = 512, the hybrid model's free width is at least the dense model's in all 3 pairs, and strictly greater in at least 2. The reasoning: Gated-DeltaNet layers keep a fixed-size state instead of a growing KV cache, so per-sample cost should rise more slowly with width.
+
+**Analysis.** `python -m freewidth atlas analyze <runs> --out <dir>` writes:
+- `ATLAS.md` (all measurements, H11–H13 tables);
+- `atlas_summary.json`;
+- `atlas.png` (free width vs model size, with the roofline).
+
+H14 is read from the measurement table.
+
 #### Budget
 
 | id | approx. GPU hours |
 |---|---|
 | E1 | 8 |
+| E1b (H10) | 3.5–4 |
 | E2 | 8–10 |
 | E3 | 8 |
 | E4 | 6 |
 | E5 | 8 |
+| E6 | 2.5 (T4) + 1 (P100) |
 
 Kaggle gives about 30 GPU hours a week, so the plan takes about two weeks of free quota.
 
@@ -891,6 +976,7 @@ freewidth/
 ├── analyze.py        replay grid -> results.csv, disagreement.json, REPORT.md
 ├── compare.py        cross-run table (H2)
 ├── report.py         live-run statistics: Wilson CIs, McNemar + Holm, paired bootstrap, power
+├── atlas.py          free-width atlas (E6): measure across settings, roofline and predictors
 ├── schema.py         validation for research configs
 ├── logs.py           text / JSON logging
 ├── engine/
@@ -1033,7 +1119,7 @@ At a 128-token prompt with 128 new tokens, 16 parallel samples on the 0.8B model
   title   = {FreeWidth: Hardware-Aware Test-Time Compute for Small Language Models},
   year    = {2026},
   url     = {https://github.com/Tejascodz/freewidth},
-  version = {0.6.1}
+  version = {0.7.0}
 }
 ```
 
