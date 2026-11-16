@@ -5,7 +5,7 @@
 #       freewidth
 # The server listens on all interfaces inside the container, so it refuses to start without
 # FREEWIDTH_API_KEY. Publish the port on 127.0.0.1 unless other machines must reach it.
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:13.5.0-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
