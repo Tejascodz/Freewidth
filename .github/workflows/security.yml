@@ -29,7 +29,8 @@ jobs:
         run: pip-audit -r requirements.txt -r requirements-dev.txt --progress-spinner off
       - name: No secrets committed (detect-secrets)
         run: |
-          detect-secrets scan --all-files --exclude-files '^results/.*\.jsonl$' > /tmp/secrets.json
+          # scans every file tracked by git (not .git internals)
+          detect-secrets scan --exclude-files '^results/.*\.jsonl$' > /tmp/secrets.json
           python - <<'PY'
           import json, sys
           found = json.load(open("/tmp/secrets.json"))["results"]
