@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+- **Wording.** "Near-free" now always means "within the 1.25× latency budget"; the README no longer says extra samples "cost almost nothing".
+- **R² qualified as in-sample.** New out-of-sample checks in the atlas (pre-registered as H15):
+  - the cost curve is fitted on widths ≤ 16 and scored on widths 32–64 (`holdout_mape`);
+  - the free width from the fitted curve is compared with the one read directly from timings.
+- **Pilot sweep** `configs/atlas_t4_pilot.yaml` (4 settings, about 1 h, a subset of the full sweep with the same names, so the full run resumes from it). `kaggle_atlas_t4.sh` takes `CONFIG`.
+
 ## 0.7.0
 - **Literature review.** A systematic search found prior work that the earlier novelty statement missed:
   - near-free parallelism (He et al. 2026), which uses the same latency criterion for decode positions;

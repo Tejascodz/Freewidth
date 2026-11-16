@@ -143,6 +143,7 @@ def collect(config: str, device: str, out_dir: str, shard: tuple[int, int] = (0,
                 from .costs import DeviceFit
 
                 dfit = DeviceFit.from_dict(fit)
+                hold = holdout_error(rows, gpu)
                 for L, P in sw["operating_points"]:
                     w, censored, ratios = measured_free_width(rows, L, P, sw["eps"])
                     rec = {
@@ -158,6 +159,7 @@ def collect(config: str, device: str, out_dir: str, shard: tuple[int, int] = (0,
                         "ratios": {str(k): round(v, 4) for k, v in ratios.items()},
                         "fit_free_width": dfit.free_width(L, P, sw["eps"]), "fit_r2": fit.get("r2"),
                         "step_seconds_w1": _step_seconds(rows, L, P),
+                        "holdout_mape": hold["mape"], "holdout_n": hold["n"],
                         "minutes": round((time.time() - t0) / 60, 1),
                     }
                     f.write(json.dumps(rec) + "\n")
@@ -171,6 +173,21 @@ def collect(config: str, device: str, out_dir: str, shard: tuple[int, int] = (0,
                 b.close()
                 _free_cuda()
     return path
+
+
+def holdout_error(rows: list[dict], device: str = "", split_width: int = 16) -> dict:
+    """Out-of-sample check of the cost curve (H15): fit on widths <= split_width, then score the
+    mean absolute percentage error on the measured points with larger widths. The in-sample R^2
+    says nothing about this."""
+    from .costs import fit_device_curve
+
+    train = [r for r in rows if r["w"] <= split_width]
+    test = [r for r in rows if r["w"] > split_width and r.get("L", 0) > 1]
+    if len(train) < 5 or not test:
+        return {"mape": None, "n": len(test)}
+    fit = fit_device_curve(train, "holdout", device)
+    errs = [abs(fit.seconds(r["w"], r["L"], r["P"]) - r["seconds"]) / r["seconds"] for r in test if r["seconds"] > 0]
+    return {"mape": round(100 * st.mean(errs), 2) if errs else None, "n": len(errs)}
 
 
 def _weight_bytes(backend, mspec, setting) -> float | None:
@@ -331,6 +348,22 @@ def analyze(paths: list[str], out_dir: str) -> str:
             m = ev_gpu.get(name)
             if m:
                 L.append(f"| {name} | {m['n']} | {m['mae_log2']} | {m['within_2x']:.0%} |")
+    L += ["", "## H15: does the cost curve predict widths it was not fitted on?", ""]
+    per_setting = {}
+    for r in rows:
+        per_setting.setdefault(r["setting"] + "@" + r["gpu"], r)
+    hm = [r["holdout_mape"] for r in per_setting.values() if r.get("holdout_mape") is not None]
+    excluded = sum(1 for r in per_setting.values() if r.get("holdout_mape") is None)
+    agree = [abs(math.log2(r["fit_free_width"]) - math.log2(r["free_width"])) <= 1.0
+             for r in rows if r.get("fit_free_width")]
+    exact = [r["fit_free_width"] == r["free_width"] for r in rows if r.get("fit_free_width")]
+    if hm:
+        L.append(f"Fitted on widths <= 16, scored on widths 32-64: median error {st.median(hm):.1f}% "
+                 f"(range {min(hm):.1f}-{max(hm):.1f}%) over {len(hm)} settings; {excluded} excluded "
+                 "(no measurement above width 16).")
+    if agree:
+        L.append(f"Free width from the fitted curve vs measured directly: equal in {sum(exact) / len(exact):.0%}, "
+                 f"within one doubling in {sum(agree) / len(agree):.0%} of {len(agree)} measurements.")
     if failed:
         L += ["", "## Failed settings", ""] + [f"- {r['setting']} ({r.get('device_arg')}): {r.get('error', 'no free width')}"
                                                 for r in failed]
@@ -339,7 +372,9 @@ def analyze(paths: list[str], out_dir: str) -> str:
         f.write(md)
     summary = {"by_model": {k: v for k, v in ev_model.items() if not k.startswith("_")},
                "by_gpu": None if ev_gpu is None else {k: v for k, v in ev_gpu.items() if not k.startswith("_")},
-               "size_trend": trend, "roofline_over_measured": roof_ratio, "n_failed": len(failed)}
+               "size_trend": trend, "roofline_over_measured": roof_ratio, "n_failed": len(failed),
+               "holdout_mape_by_setting": {k: v.get("holdout_mape") for k, v in
+                                           {r["setting"] + "@" + r["gpu"]: r for r in rows}.items()}}
     with open(os.path.join(out_dir, "atlas_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     _plot(rows, os.path.join(out_dir, "atlas.png"))

@@ -1,0 +1,14 @@
+# E6 pilot on Kaggle T4 x2: 4 of the 10 settings in atlas_t4.yaml (about 1 h). Uses the same setting
+# names, so a later full run into the same output folder skips what the pilot already measured.
+#   CONFIG=configs/atlas_t4_pilot.yaml SESSION_HOURS=1.5 bash scripts/kaggle_atlas_t4.sh
+eps: 0.25
+widths: [1, 2, 4, 8, 16, 32, 64]
+gen_lens: [1, 32, 128]
+prompt_lens: [128, 512]
+repeats: 2
+operating_points: [[32, 128], [128, 128], [128, 512]]
+settings:
+  - {name: q35-0.8b-fp16, model_id: Qwen/Qwen3.5-0.8B, dtype: float16, arch: hybrid}
+  - {name: q3-0.6b-fp16,  model_id: Qwen/Qwen3-0.6B,   dtype: float16, arch: dense}
+  - {name: q35-4b-fp16,   model_id: Qwen/Qwen3.5-4B,   dtype: float16, arch: hybrid}
+  - {name: q3-4b-fp16,    model_id: Qwen/Qwen3-4B,     dtype: float16, arch: dense}

@@ -82,3 +82,22 @@ def test_shipped_atlas_configs_are_valid():
     for name in ("atlas_t4", "atlas_p100", "atlas_mock"):
         sw = atlas.load_sweep(f"configs/{name}.yaml")
         assert sw["settings"] and 1 in sw["widths"]
+
+
+def test_holdout_error_is_out_of_sample():
+    from freewidth.costs import DeviceFit
+
+    truth = DeviceFit("m", {"e": 0.05, "d": 1e-6, "a": 2e-3, "b": 6e-5, "g": 1e-8})
+    rows = [{"w": w, "L": L, "P": P, "seconds": truth.seconds(w, L, P)}
+            for w in (1, 2, 4, 8, 16, 32, 64) for L in (1, 32, 128) for P in (128, 512)]
+    h = atlas.holdout_error(rows)
+    assert h["n"] == 8 and h["mape"] < 1.0                    # the form is right: extrapolates well
+    kinked = [{**r, "seconds": r["seconds"] * (3.0 if r["w"] > 16 else 1.0)} for r in rows]
+    assert atlas.holdout_error(kinked)["mape"] > 50            # a knee the fit never saw is caught
+    assert atlas.holdout_error([r for r in rows if r["w"] <= 16])["mape"] is None
+
+
+def test_pilot_is_a_subset_of_the_full_sweep():
+    full = {s["name"]: s for s in atlas.load_sweep("configs/atlas_t4.yaml")["settings"]}
+    pilot = atlas.load_sweep("configs/atlas_t4_pilot.yaml")["settings"]
+    assert pilot and all(full[s["name"]] == s for s in pilot)

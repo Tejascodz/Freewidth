@@ -7,11 +7,11 @@
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
-**Abstract.** Test-time compute strategies (parallel sampling with voting, sequential sampling, escalation to a larger model, verification) are usually compared by FLOPs. On a single-tenant, memory-bandwidth-bound accelerator, that cost model is wrong in a specific, measurable way: a decoding step reads the model's weights once regardless of batch width, so up to a device- and model-specific *free width*, additional parallel samples cost almost nothing.
+**Abstract.** Test-time compute strategies (parallel sampling with voting, sequential sampling, escalation to a larger model, verification) are usually compared by FLOPs. On a single-tenant, memory-bandwidth-bound accelerator, that cost model is wrong in a specific, measurable way: a decoding step reads the model's weights once regardless of batch width, so up to a device- and model-specific *free width*, additional parallel samples add at most a fixed latency budget (here 25%) over a single sample.
 
 FreeWidth does three things:
 
-- It **measures** the free width per device and model by fitting a parametric cost curve to timed decodes. On an NVIDIA T4: 16 for Qwen3.5-0.8B and 4 for Qwen3.5-4B, R² ≥ 0.997. The criterion is the sample-axis counterpart of *near-free parallelism* (He et al. 2026), which uses the same latency test for decode positions per forward pass.
+- It **measures** the free width per device and model by fitting a parametric cost curve to timed decodes. On an NVIDIA T4: 16 for Qwen3.5-0.8B and 4 for Qwen3.5-4B (in-sample fit R² ≥ 0.997; held-out validation is part of E6). The criterion is the sample-axis counterpart of *near-free parallelism* (He et al. 2026), which uses the same latency test for decode positions per forward pass.
 - It **runs** small-to-large model ladders live: waves sized to the free width, an in-wave Bayesian early stop (QuorumStop), and single-pass prefill verification by the larger model, streamed across a second GPU.
 - It **evaluates** them under a pre-registered protocol: exact paired tests with Holm correction, Wilson intervals, paired bootstrap and power analysis.
 
@@ -84,7 +84,11 @@ with non-negative least squares over timed, forced-length decodes. The grid is w
 
 *Figure 1.* Wave time relative to a single sample (log–log). Under a FLOP model, 16 samples cost 16×. Measured, they cost about 1.2× (0.8B). The 4B curve bends earlier; this run did not isolate why.
 
-**Consequence.** Within the free width, self-consistency is nearly free in latency. Beyond it, cost grows close to linearly. A scheduler that ignores this either wastes free samples or pays for samples it believes are free.
+**Consequence.** Within the free width, self-consistency costs at most 1.25× the latency of one sample. This is near-free under the stated budget, not literally free. Beyond it, cost grows close to linearly. A scheduler that ignores this either leaves cheap samples unused or pays full price for samples it believes are cheap.
+
+**What R² does and does not show.** The R² values are in-sample: they measure how well the curve fits the calibration points it was fitted to. They do not show that the curve predicts unmeasured widths, other models or other GPUs. The atlas (E6) adds two out-of-sample checks:
+- the curve is fitted on widths ≤ 16 and scored on the measured widths 32 and 64;
+- the free width read from the fitted curve is compared with the free width read directly from timings.
 
 ## 3. System design
 
@@ -252,13 +256,13 @@ Runs 1–2 used 100 questions each and the one-GPU `big_sc` baseline ([Appendix 
 
 | id | hypothesis | status | evidence |
 |---|---|---|---|
-| — | Free width is stable and measurable | supported | R² ≥ 0.997, identical across three sessions |
+| — | Free width is stable and measurable | supported (one GPU type, two models) | identical free widths across three sessions; in-sample R² ≥ 0.997 (out-of-sample checks pending, H15) |
 | H6 | Concurrent verification lowers escalation latency | supported | 68.8 s vs 111.8 s on hard questions (run 2) |
 | H7 | A live veto rescues confident-but-wrong majorities | supported | 12/13 vs 8/13 (run 2; small n) |
 | H8 | Read-Locate-Fork replaces large-model writing | refuted | §5.2–5.3 |
 | H9 | The large model is better used as a reader than a writer | refuted | −6.3 points, Holm p = 6.2×10⁻⁴ |
 | H10 | Escalating uncertain-verifier quorums closes the gap | pending | E1b, [Appendix A](#appendix-a) |
-| H11–H14 | Free-width atlas: roofline gap, size dependence, hybrid vs dense, predictability | pending | E6, [Appendix A](#appendix-a) |
+| H11–H15 | Free-width atlas: roofline gap, size dependence, predictability, hybrid vs dense, held-out accuracy of the cost model | pending | E6, [Appendix A](#appendix-a) |
 | H1–H5 | Offline cost-model and strategy hypotheses | not yet run | [Appendix C](#appendix-c) |
 
 ## 6. Discussion
@@ -327,7 +331,7 @@ Everything runs on free compute. The per-question rows and generated reports for
 ```bash
 git clone https://github.com/Tejascodz/freewidth && cd freewidth
 pip install -r requirements-dev.txt
-make lint test                     # 103 tests on a simulated device; no GPU needed
+make lint test                     # 105 tests on a simulated device; no GPU needed
 
 # recompute every statistic in Section 5 from the committed rows
 python -m freewidth report results/t4_gsm8k_E1_2026-11-16 --out /tmp/e1 \
@@ -377,7 +381,7 @@ python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limi
 - **Container:** non-root Docker image.
 
 **Testing and CI.**
-- 103 tests run on a simulated device: controller logic, policies, statistics, server security and limits, and configs. The real `transformers` path is tested on a tiny model on CPU.
+- 105 tests run on a simulated device: controller logic, policies, statistics, server security and limits, and configs. The real `transformers` path is tested on a tiny model on CPU.
 - CI runs on Python 3.10–3.12 with SHA-pinned Actions and read-only permissions.
 - A security workflow runs bandit, pip-audit, detect-secrets and CodeQL on every push and weekly. Dependabot is enabled.
 
@@ -487,7 +491,7 @@ Each experiment's primary comparisons, sample size and pass/fail criteria are wr
 | E3 | does it hold for another model pair | T4 x2, Qwen3.5-2B → 4B, GSM8K, 300 q | planned |
 | E4 | does the strategy ranking change with the hardware | P100 (one GPU), GSM8K, 300 q | planned |
 | E5 | do hybrid (linear-attention) models change the small-vs-big trade-off (H2) | T4 x2, dense Qwen3 0.6B → 4B, GSM8K, 300 q | planned |
-| E6 | free-width atlas: do the near-free-parallelism principles hold on the sample axis for hybrid models on consumer GPUs (H11–H14) | T4 x2 and P100, 10 + 3 settings, calibration only | **ready**: `scripts/kaggle_atlas_t4.sh`, `scripts/kaggle_atlas_p100.sh` |
+| E6 | free-width atlas: do the near-free-parallelism principles hold on the sample axis for hybrid models on consumer GPUs (H11–H15) | T4 x2 and P100, 10 + 3 settings, calibration only | **ready**: `scripts/kaggle_atlas_t4.sh`, `scripts/kaggle_atlas_p100.sh` |
 
 #### E1: fair baseline and the repair retest
 
@@ -585,7 +589,7 @@ CONFIG=configs/engine_t4_dense.yaml POLICIES=overlap,big_sc2,freewidth \
 ```
 **Claim.** Free widths and the overlap vs big-model trade-off differ between hybrid Qwen3.5 and dense Qwen3 at similar sizes. This is reported descriptively, since model families also differ in accuracy.
 
-#### E6: free-width atlas (H11–H14)
+#### E6: free-width atlas (H11–H15)
 
 **Motivation.**
 - Near-free parallelism (He et al. 2026) and batch-saturation studies (*Mind the Memory Gap* 2025) establish the latency criterion. They show that roofline estimates over-predict it, and explain the boundary by idle compute, kernel granularity and CPU overhead.
@@ -614,10 +618,16 @@ CONFIG=configs/engine_t4_dense.yaml POLICIES=overlap,big_sc2,freewidth \
   - *Refuted* if it is negative in 50% or fewer.
   - A size dependence would contradict the size-independent idle-compute term for dense FFNs, and point to attention, recurrent state or per-step overhead as the binding limit.
 - **H13 (predictability, exploratory).** A ridge regression on setting features, evaluated leave-one-model-out (fp16 and 4-bit versions of a model are held out together), reaches a mean absolute error of at most 0.5 in log2 units and beats both the roofline and the median baseline. It is reported regardless of outcome. With only 2 GPU types, leave-one-GPU-out results are descriptive only.
+- **H15 (the cost model predicts unmeasured widths).** For each setting, the curve is fitted on widths ≤ 16 and used to predict the measured times at widths 32 and 64.
+  - *Supported* if the median absolute percentage error over settings is at most 15%, and the free width from the full fit equals the directly measured free width (within one doubling) in at least 80% of measurements.
+  - *Refuted* if the median error exceeds 30%.
+  - Settings that ran out of memory before width 32 are excluded and counted.
 - **H14 (hybrid vs dense).** At matched size (0.8B vs 0.6B, 2B vs 1.7B, 4B vs 4B) and P = 512, the hybrid model's free width is at least the dense model's in all 3 pairs, and strictly greater in at least 2. The reasoning: Gated-DeltaNet layers keep a fixed-size state instead of a growing KV cache, so per-sample cost should rise more slowly with width.
 
+**Pilot first.** `scripts/kaggle_atlas_t4.sh` with `CONFIG=configs/atlas_t4_pilot.yaml` measures 4 of the 10 T4 settings (Qwen3.5 0.8B and 4B, Qwen3 0.6B and 4B, fp16) in about 1 h. The full run later reuses the same output folder and skips settings already measured. No hypothesis is evaluated on the pilot alone.
+
 **Analysis.** `python -m freewidth atlas analyze <runs> --out <dir>` writes:
-- `ATLAS.md` (all measurements, H11–H13 tables);
+- `ATLAS.md` (all measurements, H11–H13 and H15 tables);
 - `atlas_summary.json`;
 - `atlas.png` (free width vs model size, with the roofline).
 
@@ -1119,7 +1129,7 @@ At a 128-token prompt with 128 new tokens, 16 parallel samples on the 0.8B model
   title   = {FreeWidth: Hardware-Aware Test-Time Compute for Small Language Models},
   year    = {2026},
   url     = {https://github.com/Tejascodz/freewidth},
-  version = {0.7.0}
+  version = {0.7.1}
 }
 ```
 
