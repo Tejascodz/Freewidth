@@ -1,0 +1,31 @@
+# E1b / H10 on Kaggle T4 x2: the engine_t4.yaml ladder, with overlap's quorum accept switched off.
+# A small-model majority that the 4B checked but was unsure about (0.2 <= P(Yes) < 0.95) is
+# escalated to the 4B instead of being accepted.
+#   bash scripts/kaggle_h10.sh
+engine:
+  ladder:
+    - {tag: q35-0.8b, backend: hf, model_id: Qwen/Qwen3.5-0.8B, device: "cuda:0", dtype: float16, enable_thinking: false}
+    - {tag: q35-4b,   backend: hf, model_id: Qwen/Qwen3.5-4B,   device: "cuda:1", dtype: float16, enable_thinking: false,
+       replica_devices: ["cuda:0"]}   # second copy for big_sc2 only, loaded on first use
+  policy:
+    quorum_accept: false   # H10: escalate a majority the 4B is unsure about
+    name: freewidth        # freewidth | hwave | sc | single | overlap | repair | big_sc | big_sc2
+    tau: 0.9               # Beta-posterior confidence needed to stop
+    max_waves: 2           # waves per model before verifying / escalating
+    quorum: true           # live QuorumStop inside each wave
+    verify: true           # prefill verification by the next model before escalating
+    verify_accept: 0.6     # minimum P(Yes) to accept a verified candidate
+    width: free            # 'free' = calibrated free width, or a fixed integer
+    max_width: 32
+  sampling: {temperature: 0.7, top_p: 1.0, max_new_tokens: 1024}
+  calibration:
+    dir: calibration/t4_h10
+    auto: true
+    eps: 0.25
+    widths: [1, 2, 4, 8, 16, 32]
+    gen_lens: [1, 32, 128]
+    prompt_lens: [128, 512]
+    repeats: 2
+    warmup: true
+  server: {host: 127.0.0.1, port: 8000, model_name: freewidth, max_queue: 16, request_timeout_s: 900}
+  log_json: false

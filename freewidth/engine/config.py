@@ -44,6 +44,7 @@ class PolicyConfig(BaseModel):
     require_verified: bool = True                     # quorum accept waits until the lead has been scored
     stream_verify: bool = True                        # score each finished small-model row immediately
     speculative: bool = True                          # start the big model early on failure signals
+    quorum_accept: bool = True                        # False (H10): escalate a majority B is unsure about
     trigger_min_finished: int = Field(4, ge=1)
     trigger_lead_prob: float = Field(0.6, ge=0.0, le=1.0)
     runaway_factor: float = Field(2.0, ge=1.0)        # cut rows running > factor x median finished length

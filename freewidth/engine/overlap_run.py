@@ -21,7 +21,7 @@ def _controller(pol, width) -> OverlapController:
         require_verified=pol.require_verified and pol.stream_verify, min_finished=pol.min_finished,
         trigger_min_finished=pol.trigger_min_finished, trigger_lead_prob=pol.trigger_lead_prob,
         runaway_factor=pol.runaway_factor, runaway_min_finished=pol.runaway_min_finished,
-        speculative=pol.speculative)
+        speculative=pol.speculative, quorum_accept=pol.quorum_accept)
 
 
 def _check_deadline(deadline):

@@ -22,7 +22,7 @@ python -m freewidth bench --config "$CONFIG" --dataset gsm8k --limit "$LIMIT" \
   --policies "$POLICIES" --out "$OUT" --max-hours "$LEFT" 2>&1 | grep --line-buffered -E "progress|policy done|replica|budget|skipped|Error|Traceback"
 cat "$OUT/BENCH.md"
 cp -r calibration "$OUT/" 2>/dev/null || true
-# primary comparisons declared before the run (docs/experiments.md, E1)
+# primary comparisons declared before the run (README, "Pre-registered experiments", E1)
 python -m freewidth report "$OUT" --out "$OUT/report" --title "T4 x2, GSM8K, $LIMIT questions" \
   --primary overlap:big_sc2,overlap:repair || echo "report failed; the raw rows are in $OUT/bench_rows.jsonl"
 nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv

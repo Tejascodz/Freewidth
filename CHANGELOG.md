@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+- **H10 switch:** `quorum_accept: false` (policy option, also a per-request override). When the big model has checked the small model's majority but is unsure (veto_lo ≤ P(Yes) < accept_hi), overlap escalates at that moment (trigger `uncertain_quorum`) instead of accepting. Comes with controller and policy tests.
+- E1b pre-registered precisely. `configs/engine_t4_h10.yaml` and `scripts/kaggle_h10.sh` (session capped at 5 h to protect the weekly GPU quota).
+- `kaggle_experiment.sh`: `PRIMARY=""` runs the report without primary comparisons.
+- All engine configs bind to `127.0.0.1`; Docker passes `--host 0.0.0.0` with a required API key.
+- **README redesigned:** the idea in one picture, results with honest reading, a mermaid diagram of the overlap ladder, quickstart, and a "what worked, what failed" table. The research background moved to `docs/research.md`.
+- **One README:** all documentation pages (results, experiments, engine, research design, limitations, architecture) are merged into README.md as collapsible sections. `docs/` keeps only figures. SECURITY.md, CONTRIBUTING.md and CHANGELOG.md stay separate because GitHub uses them.
+- Wording fix: E1's 28 `quorum` accepts were majorities the 4B had checked and was *unsure* about, not unchecked ones.
+
 ## 0.5.2
 - E1 complete: rows, report and write-up for all three policies (overlap, big_sc2, repair) on 300 questions. Both pre-registered claims failed. The overlap gap is traced to 28 unverified quorum accepts, and H10 / E1b are pre-registered.
 - Correction: the data shows the 0.5.1 seeding bug did **not** duplicate `big_sc2`'s samples (wave token counts match on 11 of 300 questions). The fix stays.
