@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.1
+- README rewritten as a technical report: abstract, problem, the free-width cost model and measurement, system design (QuorumStop, prefill verification, policies and decision rules), evaluation methodology and statistical protocol, results with pre-registered tests and error analysis, discussion, limitations, reproduction, engineering, related work and references. The supporting material moved to appendices A–E. No emojis.
+
 ## 0.6.0
 - **H10 switch:** `quorum_accept: false` (policy option, also a per-request override). When the big model has checked the small model's majority but is unsure (veto_lo ≤ P(Yes) < accept_hi), overlap escalates at that moment (trigger `uncertain_quorum`) instead of accepting. Comes with controller and policy tests.
 - E1b pre-registered precisely. `configs/engine_t4_h10.yaml` and `scripts/kaggle_h10.sh` (session capped at 5 h to protect the weekly GPU quota).
