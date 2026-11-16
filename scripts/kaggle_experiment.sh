@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One pre-registered experiment per Kaggle commit (see docs/experiments.md).
+# One pre-registered experiment per Kaggle commit (see README, "Pre-registered experiments").
 #   CONFIG   engine config               (default configs/engine_t4.yaml)
 #   DATASET  gsm8k | math500             (default gsm8k)
 #   LIMIT    questions                   (default 300)

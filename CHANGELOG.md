@@ -6,6 +6,7 @@
 - `kaggle_experiment.sh`: `PRIMARY=""` runs the report without primary comparisons.
 - All engine configs bind to `127.0.0.1`; Docker passes `--host 0.0.0.0` with a required API key.
 - **README redesigned:** the idea in one picture, results with honest reading, a mermaid diagram of the overlap ladder, quickstart, and a "what worked, what failed" table. The research background moved to `docs/research.md`.
+- **One README:** all documentation pages (results, experiments, engine, research design, limitations, architecture) are merged into README.md as collapsible sections. `docs/` keeps only figures. SECURITY.md, CONTRIBUTING.md and CHANGELOG.md stay separate because GitHub uses them.
 - Wording fix: E1's 28 `quorum` accepts were majorities the 4B had checked and was *unsure* about, not unchecked ones.
 
 ## 0.5.2
