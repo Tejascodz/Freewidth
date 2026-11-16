@@ -44,14 +44,14 @@
 |---|---|---|---|
 | 4B verified the 0.8B's answer | 188 | 93.6% | 17.2 |
 | 4B wrote the answer | 82 | 95.1% | 77.1 |
-| **quorum alone (0.8B majority, not verified)** | **28** | **46.4%** | 19.0 |
+| **0.8B majority, 4B checked but unsure (0.2 ≤ P(Yes) < 0.95)** | **28** | **46.4%** | 19.0 |
 | other | 2 | — | — |
 
-Almost all of overlap's accuracy gap comes from **28 questions accepted on the small model's majority alone**:
+Almost all of overlap's accuracy gap comes from **28 questions accepted on the small model's majority while the 4B's check was unsure**. The 4B gave them P(Yes) between the veto threshold (0.2) and the accept threshold (0.95):
 - On those 28, overlap was right 13 times. `big_sc2` was right 26 times.
 - On the other 272, overlap's accuracy is 93.8% (255/272).
 
-This gives a concrete, testable fix: never accept an unverified quorum; escalate instead. It is pre-registered as **H10 / E1b** in [experiments.md](experiments.md).
+This gives a concrete, testable fix: when the 4B is unsure about the majority answer, don't accept it; start the 4B on the question instead. It is pre-registered as **H10 / E1b** in [experiments.md](experiments.md).
 - **Upper bound if it works:** about 93.7%. That is 13 more correct, assuming the 4B is as accurate on those questions as `big_sc2` was.
 - **Cost:** roughly +4–5 s mean.
 - These are estimates from this run, not results.

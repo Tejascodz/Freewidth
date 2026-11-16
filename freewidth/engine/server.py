@@ -65,7 +65,7 @@ class ChatRequest(BaseModel):
 
 _ALLOWED_OVERRIDES = {"name", "tau", "max_waves", "quorum", "min_finished", "width", "max_width",
                       "verify", "verify_accept", "top_c", "sc_n", "free_form_fallback", "raw_prompt",
-                      "veto_lo", "accept_hi", "require_verified", "stream_verify", "speculative",
+                      "veto_lo", "accept_hi", "require_verified", "quorum_accept", "stream_verify", "speculative",
                       "trigger_min_finished", "trigger_lead_prob", "runaway_factor", "runaway_min_finished",
                       "verify_wait_s", "flaw_p", "flaw_conf"}
 

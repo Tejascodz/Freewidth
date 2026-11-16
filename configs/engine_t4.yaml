@@ -28,5 +28,5 @@ engine:
     prompt_lens: [128, 512]
     repeats: 2
     warmup: true
-  server: {host: 0.0.0.0, port: 8000, model_name: freewidth, max_queue: 16, request_timeout_s: 900}
+  server: {host: 127.0.0.1, port: 8000, model_name: freewidth, max_queue: 16, request_timeout_s: 900}
   log_json: false

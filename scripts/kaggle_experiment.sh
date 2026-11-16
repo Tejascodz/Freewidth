@@ -26,5 +26,7 @@ echo "time budget for the benchmark: $LEFT h"
 python -m freewidth bench --config "$CONFIG" --dataset "$DATASET" --limit "$LIMIT" \
   --policies "$POLICIES" --out "$OUT" --max-hours "$LEFT" 2>&1 | grep --line-buffered -E "progress|policy done|replica|budget|skipped|Error|Traceback"
 cp -r calibration "$OUT/" 2>/dev/null || true
+PRIMARY_ARGS=()
+[ -n "$PRIMARY" ] && PRIMARY_ARGS=(--primary "$PRIMARY")
 python -m freewidth report "$OUT" --out "$OUT/report" --title "$NAME, $DATASET, $LIMIT questions" \
-  --primary "$PRIMARY" || echo "report failed; the raw rows are in $OUT/bench_rows.jsonl"
+  "${PRIMARY_ARGS[@]}" || echo "report failed; the raw rows are in $OUT/bench_rows.jsonl"

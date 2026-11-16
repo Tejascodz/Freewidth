@@ -57,8 +57,11 @@ class OverlapController:
     def __init__(self, width: int, tau: float, *, veto_lo: float = 0.2, accept_hi: float = 0.95,
                  require_verified: bool = True, min_finished: int = 2, trigger_min_finished: int = 4,
                  trigger_lead_prob: float = 0.6, runaway_factor: float = 2.0,
-                 runaway_min_finished: int = 4, speculative: bool = True):
+                 runaway_min_finished: int = 4, speculative: bool = True, quorum_accept: bool = True):
         self.width = width
+        # False (H10): a majority the big model has checked but is unsure about (veto_lo <= P(Yes)
+        # < accept_hi) is not accepted; the big model is started on it instead.
+        self.quorum_accept = quorum_accept
         self.tau = tau
         self.veto_lo = veto_lo
         self.accept_hi = accept_hi
@@ -122,8 +125,14 @@ class OverlapController:
         # 2. accept by quorum unless vetoed (optionally after B has looked at it)
         quorum = key is not None and sum(self.counts.values()) >= self.min_finished and lp >= self.tau
         if quorum and not self.vetoed(key) and (not self.require_verified or self.best_p(key) is not None):
-            d.accept, d.reason = key, "quorum"
-            return d
+            if self.quorum_accept:
+                d.accept, d.reason = key, "quorum"
+                return d
+            if self.best_p(key) is not None and not self.triggered:
+                # checked and not vetoed, but below accept_hi: escalate now rather than at wave end
+                self.triggered, self.trigger_step, self.trigger_reason = True, step, "uncertain_quorum"
+                d.trigger, d.trigger_reason = True, "uncertain_quorum"
+                return d
         # 3. straggler cut: rows outliving the finished ones by runaway_factor
         lengths = [v[1] for v in self.finished.values()]
         if n_fin >= self.runaway_min_finished:
@@ -154,7 +163,7 @@ class OverlapController:
                     if self.best_p(k) is not None and self.best_p(k) >= self.accept_hi]
         if verified:
             d.accept, d.reason = max(verified)[2], "verified_end"
-        elif key is not None and lp >= self.tau and not self.vetoed(key):
+        elif self.quorum_accept and key is not None and lp >= self.tau and not self.vetoed(key):
             d.accept, d.reason = key, "quorum_end"
         return d
 

@@ -125,3 +125,33 @@ def test_repair_and_big_sc_simulated(engine):
         b = engine.solve(q.question, overrides={"name": "big_sc", "sc_n": 4}, seed=i, sim_question=q)
         assert b.model == "b" and b.waves[0].width == 4
     assert reasons <= {"quorum", "verified", "repaired", "big_model", "free_form"}
+
+
+def test_h10_uncertain_quorum_escalates_instead_of_accepting():
+    c = _ctrl(quorum_accept=False)
+    for i in range(4):
+        c.on_finish(i, BOX % 7, 100 + i, 100 + i)
+    assert c.decide(104).accept is None and not c.triggered    # not yet checked: wait
+    c.on_verified("7.0", 0.7)                                   # checked, unsure (0.2 <= p < 0.95)
+    d = c.decide(105)
+    assert d.accept is None and d.trigger and d.trigger_reason == "uncertain_quorum"
+    assert c.end_of_wave().accept is None                       # no quorum_end either
+
+
+def test_h10_still_accepts_confidently_verified_answers():
+    c = _ctrl(quorum_accept=False)
+    for i in range(3):
+        c.on_finish(i, BOX % 7, 100 + i, 100 + i)
+    c.on_verified("7.0", 0.98)
+    d = c.decide(103)
+    assert d.accept == "7.0" and d.reason == "verified"
+
+
+def test_h10_policy_never_reports_quorum_accepts(engine):
+    qs = load_questions({"name": "toy", "limit": 40, "seed": 6})
+    reasons = []
+    for i, q in enumerate(qs):
+        r = engine.solve(q.question, overrides={"name": "overlap", "quorum_accept": False}, seed=i, sim_question=q)
+        reasons.append(r.notes["accept_reason"])
+    assert not {"quorum", "quorum_end"} & set(reasons)
+    assert "big_model" in reasons
