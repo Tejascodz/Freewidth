@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0
+- **Literature review.** A systematic search found prior work that the earlier novelty statement missed:
+  - near-free parallelism (He et al. 2026), which uses the same latency criterion for decode positions;
+  - batch-saturation studies and latency predictors: *Mind the Memory Gap*, SLIM, Vidur, KernelSight-LM;
+  - edge parallel test-time scaling: EdgeReasoning, Efficient Reasoning on the Edge, mobile-NPU TTS, FastTTS;
+  - resource-aware TTS: ATEST, ATTS, *Sample Count Is Not Enough*;
+  - in-batch pruning: ST-BoN, Speculative Rejection.
+
+  The README's novelty statement, related work and references are rewritten. The remaining contribution is stated as a pre-registered systems evaluation plus measurements on hybrid models on consumer GPUs.
+- **Free-width atlas (E6).**
+  - `python -m freewidth atlas collect|analyze`: calibration-only sweeps over models, number formats, sequence lengths and GPUs. Free width is measured directly from timings, with censoring. Results are written per measurement and resumable, with a time budget.
+  - Analysis: roofline comparison, size trend, leave-one-model-out predictors.
+  - Configs `atlas_t4.yaml`, `atlas_p100.yaml`, `atlas_mock.yaml`; scripts `kaggle_atlas_t4.sh` (one process per GPU) and `kaggle_atlas_p100.sh`.
+  - H11–H14 are pre-registered in Appendix A. There are tests on the simulated device.
+
 ## 0.6.1
 - README rewritten as a technical report: abstract, problem, the free-width cost model and measurement, system design (QuorumStop, prefill verification, policies and decision rules), evaluation methodology and statistical protocol, results with pre-registered tests and error analysis, discussion, limitations, reproduction, engineering, related work and references. The supporting material moved to appendices A–E. No emojis.
 

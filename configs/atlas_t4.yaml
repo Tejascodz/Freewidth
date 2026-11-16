@@ -1,0 +1,22 @@
+# E6 free-width atlas on Kaggle T4 x2 (pre-registered in README Appendix A).
+# Run with scripts/kaggle_atlas_t4.sh: one process per GPU, each taking every other setting.
+eps: 0.25
+widths: [1, 2, 4, 8, 16, 32, 64]
+gen_lens: [1, 32, 128]
+prompt_lens: [128, 512]
+repeats: 2
+operating_points: [[32, 128], [128, 128], [128, 512]]   # (generated tokens L, prompt tokens P)
+settings:
+  # hybrid (Gated DeltaNet + attention), fp16
+  - {name: q35-0.8b-fp16, model_id: Qwen/Qwen3.5-0.8B, dtype: float16, arch: hybrid}
+  - {name: q35-2b-fp16,   model_id: Qwen/Qwen3.5-2B,   dtype: float16, arch: hybrid}
+  - {name: q35-4b-fp16,   model_id: Qwen/Qwen3.5-4B,   dtype: float16, arch: hybrid}
+  # dense attention, fp16
+  - {name: q3-0.6b-fp16,  model_id: Qwen/Qwen3-0.6B,   dtype: float16, arch: dense}
+  - {name: q3-1.7b-fp16,  model_id: Qwen/Qwen3-1.7B,   dtype: float16, arch: dense}
+  - {name: q3-4b-fp16,    model_id: Qwen/Qwen3-4B,     dtype: float16, arch: dense}
+  # 4-bit NF4 (bitsandbytes); the 8-9B models only fit a T4 in 4-bit
+  - {name: q35-0.8b-nf4,  model_id: Qwen/Qwen3.5-0.8B, dtype: float16, load_in_4bit: true, arch: hybrid}
+  - {name: q35-4b-nf4,    model_id: Qwen/Qwen3.5-4B,   dtype: float16, load_in_4bit: true, arch: hybrid}
+  - {name: q35-9b-nf4,    model_id: Qwen/Qwen3.5-9B,   dtype: float16, load_in_4bit: true, arch: hybrid}
+  - {name: q3-8b-nf4,     model_id: Qwen/Qwen3-8B,     dtype: float16, load_in_4bit: true, arch: dense}

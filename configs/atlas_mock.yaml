@@ -1,0 +1,14 @@
+# Simulated atlas for tests and a dry run without a GPU.
+eps: 0.25
+widths: [1, 2, 4, 8, 16, 32]
+gen_lens: [1, 32, 128]
+prompt_lens: [128, 512]
+repeats: 1
+operating_points: [[32, 128], [128, 128]]
+gpu_specs:
+  mock-device: [65.0e12, 320.0e9]
+settings:
+  - {name: mock-0.5b, backend: mock, params_b: 0.5, arch: dense}
+  - {name: mock-1b,   backend: mock, params_b: 1.0, arch: dense}
+  - {name: mock-2b,   backend: mock, params_b: 2.0, arch: hybrid, hybrid_ratio: 0.75}
+  - {name: mock-4b,   backend: mock, params_b: 4.0, arch: hybrid, hybrid_ratio: 0.75}

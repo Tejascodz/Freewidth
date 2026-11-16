@@ -70,6 +70,17 @@ def main(argv=None) -> int:
     for p_ in sub.choices.values():
         if not any(a.dest == "log_level" for a in p_._actions):
             p_.add_argument("--log-level", default="INFO")
+    at = sub.add_parser("atlas", help="free-width atlas: measure across settings, then analyse (E6)")
+    atsub = at.add_subparsers(dest="atlas_cmd", required=True)
+    ac = atsub.add_parser("collect")
+    ac.add_argument("--config", required=True)
+    ac.add_argument("--device", default="cuda:0")
+    ac.add_argument("--out", default="runs/atlas")
+    ac.add_argument("--shard", default="0/1", help="i/n: measure every n-th setting starting at i")
+    ac.add_argument("--max-hours", type=float, default=None)
+    aa = atsub.add_parser("analyze")
+    aa.add_argument("runs", nargs="+")
+    aa.add_argument("--out", required=True)
     rp = sub.add_parser("report", help="statistics report for one or more bench runs")
     rp.add_argument("runs", nargs="+", help="bench output directories or bench_rows.jsonl files")
     rp.add_argument("--out", required=True)
@@ -85,6 +96,20 @@ def main(argv=None) -> int:
     from .logs import setup_logging
 
     setup_logging(getattr(args, "log_level", "INFO"), getattr(args, "log_json", False))
+
+    if args.cmd == "atlas":
+        from . import atlas
+
+        if args.atlas_cmd == "collect":
+            i, n = (int(x) for x in args.shard.split("/"))
+            if not 0 <= i < n:
+                raise SystemExit("--shard must be i/n with 0 <= i < n")
+            print(atlas.collect(args.config, args.device, args.out, (i, n), args.max_hours))
+        else:
+            path = atlas.analyze(args.runs, args.out)
+            with open(path) as f:
+                print(f.read())
+        return 0
 
     if args.cmd == "report":
         from .report import build
