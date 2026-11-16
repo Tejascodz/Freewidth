@@ -13,7 +13,7 @@ The HF tests run when `torch` and `transformers` are installed. GPU tests run on
 ## Rules for changes
 
 - **Every behaviour change comes with a test.** The test suite runs on a simulated device, so no GPU is needed.
-- **Results are pre-registered.** New experiments go into the README's [pre-registered experiments](README.md#experiments) section *before* they run:
+- **Results are pre-registered.** New experiments go into the README's [pre-registered experiments](README.md#appendix-a) section *before* they run:
   - the primary comparisons;
   - the sample size, from the power estimate in `freewidth report`;
   - what counts as failure.
