@@ -15,7 +15,7 @@ CONFIG=${CONFIG:-configs/engine_t4.yaml}
 DATASET=${DATASET:-gsm8k}
 LIMIT=${LIMIT:-300}
 POLICIES=${POLICIES:-overlap,big_sc2,freewidth}
-PRIMARY=${PRIMARY:-overlap:big_sc2,overlap:freewidth}
+PRIMARY=${PRIMARY-overlap:big_sc2,overlap:freewidth}   # no colon: PRIMARY="" means none
 NAME=$(basename "$CONFIG" .yaml)
 OUT=${OUT:-/kaggle/working/bench_${NAME}_${DATASET}}
 pip install -q -r requirements-gpu.txt
@@ -24,7 +24,8 @@ python -m freewidth calibrate --config "$CONFIG" 2>&1 | grep -E "free width|cali
 LEFT=$(python -c "import time; print(round($SESSION_HOURS - (time.time() - $START) / 3600, 2))")
 echo "time budget for the benchmark: $LEFT h"
 python -m freewidth bench --config "$CONFIG" --dataset "$DATASET" --limit "$LIMIT" \
-  --policies "$POLICIES" --out "$OUT" --max-hours "$LEFT" 2>&1 | grep --line-buffered -E "progress|policy done|replica|budget|skipped|Error|Traceback"
+  --policies "$POLICIES" --out "$OUT" --max-hours "$LEFT" 2>&1 | grep --line-buffered -E "progress|policy done|replica|budget|skipped|Error|Traceback" \
+  || echo "benchmark exited with an error; rows finished so far are in $OUT/bench_rows.jsonl"
 cp -r calibration "$OUT/" 2>/dev/null || true
 PRIMARY_ARGS=()
 [ -n "$PRIMARY" ] && PRIMARY_ARGS=(--primary "$PRIMARY")

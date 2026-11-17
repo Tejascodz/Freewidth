@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2 (pre-flight fixes before H10 and the atlas)
+- **Fix:** `kaggle_experiment.sh` treated `PRIMARY=""` as unset and substituted the default comparisons. The H10 run has only `overlap`, so its report would have failed at the end of the run. `PRIMARY=""` now means no primary comparisons.
+- **Fix:** a benchmark crash no longer aborts the script before the calibration copy and the report; rows finished so far are kept either way.
+- **Fix (atlas resume):** a setting already measured in the output folder is skipped whichever GPU measured it. The pilot and the full sweep shard settings differently, so the full run would have re-measured the pilot's settings on the other GPU.
+- **Fix (atlas):** each GPU worker writes its own `atlas.<device>.jsonl`, so the two concurrent workers never write to the same file. A line cut off by a killed session is skipped. A failed setting that later succeeded is not reported as failed. The scripts create their output folder.
+- **Tests:** the Kaggle scripts themselves now run end to end in CI on the simulated device, with GPU tools stubbed (`tests/test_scripts.py`). The `PRIMARY` test fails on the old script.
+- **Pre-registration:** E1b's exact analysis command (run names, primary pairs) is fixed in Appendix A before any H10 data. The known small-wave inefficiency after an escalation is documented and deliberately left unchanged.
+
 ## 0.7.1
 - **Wording.** "Near-free" now always means "within the 1.25× latency budget"; the README no longer says extra samples "cost almost nothing".
 - **R² qualified as in-sample.** New out-of-sample checks in the atlas (pre-registered as H15):

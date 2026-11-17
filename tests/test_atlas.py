@@ -30,12 +30,12 @@ def test_collect_resumes_shards_and_analyzes(tmp_path):
     out = tmp_path / "atlas"
     atlas.collect("configs/atlas_mock.yaml", "cpu", str(out), shard=(0, 2))
     atlas.collect("configs/atlas_mock.yaml", "cpu", str(out), shard=(1, 2))
-    lines = [json.loads(x) for x in (out / "atlas.jsonl").read_text().splitlines()]
+    lines = atlas._read_records(str(out))
     assert {r["setting"] for r in lines} == {"mock-0.5b", "mock-1b", "mock-2b", "mock-4b"}
     assert all(r["gpu_flops"] == 65e12 and r["free_width"] >= 1 for r in lines)
     n = len(lines)
     atlas.collect("configs/atlas_mock.yaml", "cpu", str(out))            # everything done: no new rows
-    assert len((out / "atlas.jsonl").read_text().splitlines()) == n
+    assert len(atlas._read_records(str(out))) == n
     md = Path(atlas.analyze([str(out)], str(tmp_path / "an"))).read_text()
     assert "H11" in md and "H13" in md and (tmp_path / "an" / "atlas.png").exists()
     summary = json.loads((tmp_path / "an" / "atlas_summary.json").read_text())
@@ -60,11 +60,11 @@ def test_failed_setting_is_recorded_and_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(backends, "make_backend", flaky)
     out = tmp_path / "o"
     atlas.collect(str(cfg), "cpu", str(out))
-    recs = [json.loads(x) for x in (out / "atlas.jsonl").read_text().splitlines()]
+    recs = atlas._read_records(str(out))
     assert any(r["setting"] == "bad" and "error" in r for r in recs)
     monkeypatch.setattr(backends, "make_backend", real)
     atlas.collect(str(cfg), "cpu", str(out))                              # failed settings are retried
-    recs = [json.loads(x) for x in (out / "atlas.jsonl").read_text().splitlines()]
+    recs = atlas._read_records(str(out))
     assert any(r["setting"] == "bad" and "error" not in r for r in recs)
 
 
@@ -101,3 +101,34 @@ def test_pilot_is_a_subset_of_the_full_sweep():
     full = {s["name"]: s for s in atlas.load_sweep("configs/atlas_t4.yaml")["settings"]}
     pilot = atlas.load_sweep("configs/atlas_t4_pilot.yaml")["settings"]
     assert pilot and all(full[s["name"]] == s for s in pilot)
+
+
+def test_resume_ignores_which_gpu_measured_a_setting(tmp_path):
+    """The pilot shards settings differently from the full sweep: a setting the pilot measured on
+    one GPU must not be measured again by the other GPU's worker."""
+    out = tmp_path / "o"
+    atlas.collect("configs/atlas_mock.yaml", "cuda:0", str(out))            # everything on "GPU 0"
+    n = len(atlas._read_records(str(out)))
+    atlas.collect("configs/atlas_mock.yaml", "cuda:1", str(out), shard=(1, 2))
+    assert len(atlas._read_records(str(out))) == n
+    second = out / "atlas.cuda1.jsonl"
+    assert not second.exists() or second.read_text().strip() == ""
+
+
+
+def test_truncated_line_does_not_break_analysis(tmp_path):
+    out = tmp_path / "o"
+    atlas.collect("configs/atlas_mock.yaml", "cpu", str(out))
+    with open(out / "atlas.cpu.jsonl", "a") as f:
+        f.write('{"setting": "cut-off-by-a-kill')
+    rows, _ = atlas.load_atlas([str(out)])
+    assert rows and all("setting" in r for r in rows)
+
+
+def test_a_retried_failure_is_not_reported_as_failed(tmp_path):
+    out = tmp_path / "o"
+    out.mkdir()
+    (out / "atlas.cuda1.jsonl").write_text('{"setting": "mock-1b", "device_arg": "cuda:1", "error": "load: OOM"}\n')
+    atlas.collect("configs/atlas_mock.yaml", "cuda:0", str(out))
+    rows, failed = atlas.load_atlas([str(out)])
+    assert any(r["setting"] == "mock-1b" for r in rows) and not failed

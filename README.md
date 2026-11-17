@@ -331,7 +331,7 @@ Everything runs on free compute. The per-question rows and generated reports for
 ```bash
 git clone https://github.com/Tejascodz/freewidth && cd freewidth
 pip install -r requirements-dev.txt
-make lint test                     # 105 tests on a simulated device; no GPU needed
+make lint test                     # 111 tests on a simulated device; no GPU needed
 
 # recompute every statistic in Section 5 from the committed rows
 python -m freewidth report results/t4_gsm8k_E1_2026-11-16 --out /tmp/e1 \
@@ -381,7 +381,7 @@ python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limi
 - **Container:** non-root Docker image.
 
 **Testing and CI.**
-- 105 tests run on a simulated device: controller logic, policies, statistics, server security and limits, and configs. The real `transformers` path is tested on a tiny model on CPU.
+- 111 tests run on a simulated device: controller logic, policies, statistics, server security and limits, and configs. The real `transformers` path is tested on a tiny model on CPU.
 - CI runs on Python 3.10–3.12 with SHA-pinned Actions and read-only permissions.
 - A security workflow runs bandit, pip-audit, detect-secrets and CodeQL on every push and weekly. Dependabot is enabled.
 
@@ -538,6 +538,16 @@ Each experiment's primary comparisons, sample size and pass/fail criteria are wr
 **Caveat, stated in advance.** These comparisons are cross-session: same hardware type, code and questions, but a different Kaggle session. E1 showed overlap is repeatable across sessions: 86 vs 88 correct on 100 shared questions, the same answer on 85.
 - If (1) passes, E1c reruns `big_sc2` (process-per-GPU) in the same session before the claim goes in the README headline.
 - If (1) fails, the trade-off stands as reported.
+
+**Analysis command, fixed before the run.** The H10 rows are committed to `results/t4_gsm8k_H10/`. The report names a policy that appears in both runs after its folder, so the two overlap runs are `overlap@t4_gsm8k_H10` and `overlap@t4_gsm8k_E1_2026-11-16`; `big_sc2` appears only in E1 and keeps its name:
+
+```bash
+python -m freewidth report results/t4_gsm8k_E1_2026-11-16 results/t4_gsm8k_H10 \
+    --out results/t4_gsm8k_H10/vs_E1 --ladder q35-0.8b,q35-4b \
+    --primary "big_sc2:overlap@t4_gsm8k_H10,overlap@t4_gsm8k_E1_2026-11-16:overlap@t4_gsm8k_H10"
+```
+
+**Known inefficiency, left unchanged on purpose.** After an uncertain-majority escalation, the 0.8B wave keeps decoding until its rows finish or are cut, although with verification stopped it can no longer produce an accept. That costs the small GPU's time, and possibly some Python-thread contention with the 4B. Stopping the wave early would also change latency, so it is not part of H10. The change tested is only the acceptance rule.
 
 #### E2: MATH-500
 
@@ -1129,7 +1139,7 @@ At a 128-token prompt with 128 new tokens, 16 parallel samples on the 0.8B model
   title   = {FreeWidth: Hardware-Aware Test-Time Compute for Small Language Models},
   year    = {2026},
   url     = {https://github.com/Tejascodz/freewidth},
-  version = {0.7.1}
+  version = {0.7.2}
 }
 ```
 
