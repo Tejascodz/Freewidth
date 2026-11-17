@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.3 (docs: systematic novelty review)
+- **Literature review.** Covered about 90 papers across eight components. The README now has a verdict for each component, a narrow statement of contribution, the related work a reviewer will expect, and about 30 new references.
+- **Newly cited closest prior work:**
+  - DUCHESS, short-m@k, First Finish Search and SART for QuorumStop;
+  - SpecReason, GenRM, ATTS and mixture-of-thought cascades for `overlap`;
+  - Khullar et al. (self-attribution bias) for the verifier framing result.
+- **Corrections:**
+  - QuorumStop's "at least 2 finished rows" guard never binds at τ = 0.9; the earliest stop is three agreeing rows.
+  - p_lead is described as a heuristic score, not a calibrated probability.
+  - The verifier framing result confounds placement with wording, so it is no longer called self-attribution bias.
+  - The cost model's attention term is a dense-model assumption.
+- **Missing baselines** that a reviewer will expect are listed: short-m@k, a DUCHESS-style quorum, an ATEST-style stopper, a sequential cascade, a single-GPU version of `overlap`, an ε sweep, CUDA graphs, and a placement-only verifier ablation.
+
 ## 0.7.2 (pre-flight fixes before H10 and the atlas)
 - **Fix:** `kaggle_experiment.sh` treated `PRIMARY=""` as unset and substituted the default comparisons. The H10 run has only `overlap`, so its report would have failed at the end of the run. `PRIMARY=""` now means no primary comparisons.
 - **Fix:** a benchmark crash no longer aborts the script before the calibration copy and the report; rows finished so far are kept either way.
