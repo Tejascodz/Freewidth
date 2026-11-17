@@ -23,6 +23,13 @@ Both pre-registered superiority claims failed:
 
 Error analysis attributes almost all of `overlap`'s deficit to a single acceptance path. On 28 of 300 questions, a small-model majority was accepted after the verifier was uncertain; `overlap` answered 13 of them correctly, the large model 26. A follow-up (H10) that escalates instead is implemented and pre-registered.
 
+**Positioning.** A literature review covering about 90 papers (November 2026, §6 and §10) found that **none of FreeWidth's components is new on its own**:
+- the free-width criterion follows He et al. (2026);
+- QuorumStop is an adaptive-quorum variant of short-m@k and DUCHESS;
+- the two-GPU ladder composes published cascade and verification ideas.
+
+The contribution is an integration and measurement study: a pre-registered, energy-measured evaluation on one consumer GPU pair, and width–latency curves for hybrid Gated-DeltaNet models, for which no published batch-latency measurements were found.
+
 ---
 
 ## Contents
@@ -123,7 +130,15 @@ In a static batch, the slowest row sets the wave's cost, and rows finish at diff
 p_lead = P(θ > 0.5),  θ ~ Beta(n₁ + 1, n₂ + 1)
 ```
 
-Here *n₁* and *n₂* are the vote counts of the two most frequent extracted answers. When `p_lead ≥ τ` (τ = 0.9) with at least 2 finished rows, the whole wave stops, and unfinished rows are cut and do not vote. It is implemented as a `transformers` `StoppingCriteria`, so the saving is real wall time, not a replayed estimate.
+Here *n₁* and *n₂* are the vote counts of the two most frequent extracted answers. When `p_lead ≥ τ` (τ = 0.9), the whole wave stops, and unfinished rows are cut and do not vote. It is implemented as a `transformers` `StoppingCriteria`, so the saving is real wall time, not a replayed estimate.
+
+**What this rule amounts to in practice:**
+- **Earliest stops.** At τ = 0.9, two agreeing rows give p_lead = 0.875, which is not enough. The earliest possible stops are 3–0 (0.9375), then 5–1 and 6–2. The configured guard of "at least 2 finished rows" therefore never binds.
+- **Easy questions:** QuorumStop behaves like short-3@k (Hassid et al. 2025). It differs only when the first rows to finish disagree.
+- **At the 4B model's width of 4:** it reduces to "cut the fourth row if the first three agree".
+- **p_lead is a heuristic score, not a calibrated probability.** Rows finish shortest-first, so the votes seen so far are a length-biased sample, not independent draws. Checking after every finished row is also the repeated-testing pattern that ConSol (Lee et al. 2025) shows inflates error rates under this rule.
+
+**Prior art.** QuorumStop is an adaptive-quorum variant of in-batch truncation: short-m@k, First Finish Search, SART and, closest, DUCHESS (fixed agreement quorum, cancel the rest). It uses Adaptive-Consistency's stopping rule.
 
 ### 3.3 Prefill verification
 
@@ -239,7 +254,14 @@ In the first version of `repair` (run 2), the candidate solution was placed in t
 - **0.99** with self-attribution;
 - **0.10** in a third-party grading prompt.
 
-Self-attribution made the verifier accept almost everything; verified accepts were 42% accurate. This matches the self-correction blind spot reported by Tsui (2025): models fail to correct errors they believe are their own. The third-party framing used since 0.4.1 raised verified-accept accuracy to 73%, which is still below what a gate needs.
+With the first framing, the verifier accepted almost everything, and verified accepts were only 42% accurate. The third-party framing used since 0.4.1 raised verified-accept accuracy to 73%, which is still below what a gate needs.
+
+**How this relates to prior work, and what is not established.**
+- **The direction is documented.** Khullar et al. (2026) show that monitors judge the same action as more correct when it sits in a prior assistant turn. Tsui (2025) reports the mirror effect for self-correction.
+- **Two caveats apply to our data point:**
+  1. **Confound.** Our two conditions changed both the placement of the candidate (assistant turn vs user turn) and the wording of the question ("is your solution correct?" vs a grading prompt). The effect cannot yet be attributed to placement alone.
+  2. **Conflict with prior work.** Khullar et al. found the effect "greatly reduced or absent" when the assistant-turn content came from a different model. Here it came from the 0.8B model, yet the shift was 0.99 vs 0.10.
+- **Until a placement-only ablation is run**, this is reported as a framing effect, not as self-attribution bias.
 
 ### 5.5 Earlier runs and repeatability
 
@@ -280,22 +302,41 @@ Runs 1–2 used 100 questions each and the one-GPU `big_sc` baseline ([Appendix 
 - Use `overlap` when latency or energy is constrained and a few points of accuracy are acceptable.
 - Do not use `repair` in its current form.
 
-**Novelty, stated narrowly.** A literature review (November 2026, §10) found prior work for every individual mechanism:
+**Novelty, stated narrowly.** A systematic review (November 2026; about 90 papers, each checked against the paper's own text where possible; arXiv abstract pages were unavailable, so PDF and HTML versions were used) gives the following verdict for each component:
 
-| component | closest prior work | status here |
-|---|---|---|
-| Latency test for "free" parallelism | Near-free parallelism (He et al. 2026); saturation and knee batch sizes in serving (*Mind the Memory Gap* 2025; SLIM 2026) | not new; FreeWidth applies it to the sample axis of test-time scaling |
-| Parallel test-time scaling on memory-bound devices | Latency-aware TTS (2025); EdgeReasoning (2025); Efficient Reasoning on the Edge (2026); mobile-NPU TTS (EuroSys 2026); FastTTS (ASPLOS 2026); *Sample Count Is Not Enough* (2026) | not new |
-| Resource-aware sampling budgets | ATEST (Oct 2026, live GPU-load energy cost); ATTS (ICLR 2026) | not new; ATEST adapts to load, FreeWidth measures a static device and model property |
-| Early stopping of self-consistency | Adaptive-Consistency, ESC, RASC, ReASC, CASE; in-batch truncation: ST-BoN, Speculative Rejection | QuorumStop is an engineering variant (posterior stop over finishing order in a static batch) |
-| Small model with large-model verification | Speculative cascades, SplitReason, MSV, MARS | `overlap` is an integration on two GPUs, measured end to end |
-| Error localisation and repair | StepBack, decision-token correction, SpecAgent | `repair` was tested and failed |
+| # | component | verdict | closest prior work |
+|---|---|---|---|
+| 1 | Free width and the fitted T(w, L, P) model, used live to size waves | **engineering variant**; applying it to independent samples with live sizing is plausibly distinct in a narrow sense | He et al. 2026 (same criterion, decode positions per forward pass); EdgeReasoning and SLIM (fitted latency models); Kinetics (analytic choice of N) |
+| 2 | Predicting free width across models, GPUs and formats; hybrid Gated-DeltaNet curves on consumer GPUs | **plausibly distinct**, if the atlas (E6) delivers | He et al.; NeuSight; KernelSight-LM; SLIM. No published held-out predictor of the boundary was found, and no batch-latency sweep for a Gated-DeltaNet hybrid on any GPU |
+| 3 | QuorumStop | **engineering variant** | DUCHESS; short-m@k; Adaptive-Consistency |
+| 4 | `overlap` (two GPUs, streaming P(Yes) verification, veto, speculative start and cancel) | **engineering variant**; only the concurrent two-GPU schedule is plausibly distinct | ATTS; SpecReason (names overlapping the two models as future work); FastTTS; streaming MSV; GenRM |
+| 5 | Read-Locate-Fork | **not new**; reported as a negative result | speculative-decoding verification; decision-token correction; StepBack; SpecAgent |
+| 6 | Verifier framing effect | **not new** in direction; our data point is **unclear** because of a confound (§5.4) | Khullar et al. 2026; Tsui 2025 |
+| 7 | Pre-registered evaluation with exact McNemar and Holm | **not new** as methods; uncommon in test-time-scaling papers (no example found) | Miller 2024; van Miltenburg et al. 2021 |
+| 8 | Resource-aware test-time scaling as a whole | **plausibly distinct as an integration only** | ATEST 2026 (online, energy-measuring stopper); EdgeReasoning; mobile-NPU TTS; Energy Cost of Reasoning |
 
-What remains distinct is narrow:
-1. **An end-to-end, pre-registered evaluation** of these mechanisms together on free consumer hardware, including the negative results.
-2. **Measurements on hybrid Gated-DeltaNet models on consumer GPUs**, a setting the near-free parallelism study does not cover. The planned free-width atlas (E6, [Appendix A](#appendix-a)) tests whether its principles hold on the sample axis there.
+**Statement of contribution.**
+- **What FreeWidth is.** An integration and measurement study of resource-aware test-time scaling on consumer GPUs, not a new algorithm family.
+- **Free width.**
+  - It follows the near-free-parallelism criterion of He et al. (2026), who define T(N) ≤ (1+ε)·T(1) for query positions within one forward pass.
+  - FreeWidth applies a tolerance of the same form (ε = 0.25) to the independent self-consistency samples of one question.
+  - It fits a per-device latency model by non-negative least squares, in the spirit of EdgeReasoning and SLIM, and uses that fit at run time to size sampling waves.
+- **New measurements.** Width–latency curves on a T4 with Hugging Face transformers, including Gated-DeltaNet hybrid models, for which no published batch-latency measurements were found. Predicting free width across models, GPUs and formats is planned work (E6).
+- **QuorumStop.** Applies Adaptive-Consistency's stopping rule to completion events inside one batch, which makes it an adaptive-quorum variant of short-m@k, closely related to DUCHESS.
+- **`overlap`.** Composes known components: GenRM-style P(Yes) verification, small-to-large cascades, asynchronous verification as in ATTS, and straggler-driven speculation as in FastTTS. Its contribution is the concurrent schedule and its measured latency and energy trade-off.
+- **Read-Locate-Fork.** A lossy variant of speculative-decoding verification combined with error-localised resampling, reported as a negative result.
+- **Evaluation.** Pre-registered hypotheses, exact McNemar tests with Holm correction, Wilson intervals, paired bootstrap and power analysis, following published recommendations.
 
-This repository should be read as a careful systems evaluation, not as a new algorithm.
+**Baselines a reviewer will expect that are not yet run.**
+
+| component | missing baselines |
+|---|---|
+| QuorumStop | short-m@k at matched width; a DUCHESS-style fixed quorum; an ATEST-style online stopper; compute-matched full self-consistency |
+| `overlap` | a sequential cascade (mixture-of-thought consistency or C3PO style); a SpecReason-style sequential judge; the same policy co-located on one GPU, to separate the concurrency gain from the cascade gain |
+| Free width | an ε sweep over 0.10–0.30; runs with and without CUDA graphs or `torch.compile`, to measure how much eager-mode kernel-launch overhead contributes |
+| Verifier framing | a placement-only ablation (same wording, role changed); a wording-only ablation; on-policy (the 4B's own answers) vs off-policy |
+
+These are listed as planned work in [Appendix A](#appendix-a).
 
 ## 7. Limitations and threats to validity
 
@@ -323,6 +364,20 @@ This repository should be read as a careful systems evaluation, not as a new alg
 
 **Verifier**
 - All verifier results are specific to the prompt templates in `freewidth/engine/overlap_run.py` and `repair.py`.
+- The framing result in §5.4 confounds placement with wording (see above).
+
+**Cost model**
+- The quadratic attention term in T(w, L, P) is a dense-model assumption. In the hybrid Qwen3.5 models only about a quarter of the layers use full attention; the Gated-DeltaNet layers keep a fixed-size state per sample.
+- The fit is still accurate in-sample (R² ≥ 0.997), but its terms should not be read as physical costs for hybrids. Held-out accuracy is tested in E6 (H15).
+- In eager-mode transformers on a T4, a fixed kernel-launch overhead per step probably inflates the free width of small models. This has not been measured (no CUDA-graph or `torch.compile` comparison yet).
+- Free width depends on ε. No ε sweep has been run yet. He et al. report near-invariant boundaries for ε between 0.05 and 0.30.
+
+**QuorumStop**
+- p_lead is a heuristic stopping score, not a calibrated probability (§3.2).
+- The premise that wrong chains are longer is published (short-m@k), but so is counter-evidence on hard questions (DUCHESS, MARS), so the benefit may depend on difficulty.
+
+**Missing baselines**
+- The baselines listed at the end of §6 have not been run. Until they are, claims about QuorumStop and `overlap` are relative to the baselines in §5 only.
 
 ## 8. Reproducing the results
 
@@ -387,44 +442,70 @@ python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limi
 
 ## 10. Related work
 
-**Near-free parallelism and batch saturation.**
-- He et al. (2026) define near-free parallelism, `T(N) ≤ (1+ε)·T(1)`, for decode positions per forward pass. They explain its boundary by idle compute for dense FFNs, and by kernel granularity for MoE and attention. They also show the roofline over-predicts by up to 23×.
-- *Mind the Memory Gap* (2025) finds that large-batch decoding stays memory-bound. It attributes part of the gap to the hardware limit to CPU idle time between decode steps, and it recommends a knee batch size.
-- SLIM (2026), Vidur (2024), GenZ, LLMCompass, NeuSight and KernelSight-LM (2026) predict LLM latency and throughput from profiles or datasheets, some on unseen GPUs.
-- FreeWidth's free width is the sample-axis instance of the same idea. The atlas experiment tests these principles on hybrid models and consumer GPUs instead of re-deriving them.
+**Near-free parallelism and latency models.**
+- **He et al. (2026)** define near-free parallelism: the largest N with T(N) ≤ (1+ε)·T(1), with ε = 0.2, where N counts decode positions per forward pass (speculative decoding, multi-token prediction, diffusion LLMs), on A800, H800 and H20 GPUs with vLLM and SGLang.
+  - They explain the boundary by idle compute for dense FFNs, and by kernel tile granularity for MoE layers and attention.
+  - A roofline estimate over-predicts the boundary by 2.4× to 23×.
+  - FreeWidth uses the same criterion for independent samples.
+- **Fitted latency models.**
+  - EdgeReasoning (Jetson Orin) fits a decode-latency model of the same form as ours at width 1, and uses it to choose token budgets.
+  - SLIM fits a per-GPU model in batch size and sequence lengths, to choose serving batch sizes.
+  - Kinetics chooses the number of samples for best-of-N from an analytic cost that assumes large serving batches.
+- **Latency predictors**, relevant to the atlas: NeuSight, KernelSight-LM, GenZ, LLMCompass, Vidur and LLM-Viewer predict latency on unseen GPUs or kernels. None of them targets the near-free boundary itself.
+- **Batch saturation:** *Mind the Memory Gap* studies the saturation ("knee") batch size in large-batch serving.
+- **Hybrid and state-space models:**
+  - M1 sweeps batch sizes for a Mamba hybrid on an H100.
+  - Mitra et al. measure state-space and hybrid models on an RTX 4090 and a Jetson at batch size 1.
+  - No batch-latency sweep for a Gated-DeltaNet hybrid was found.
 
-**Parallel test-time scaling on constrained hardware.**
-- Latency-aware TTS (2025) shows that latency-optimal and compute-optimal test-time scaling differ.
-- EdgeReasoning (2025, Jetson Orin), Efficient Reasoning on the Edge (2026, Qualcomm), mobile-NPU TTS (EuroSys 2026) and FastTTS (ASPLOS 2026) exploit memory-bound decoding for parallel sampling on edge devices.
-- *Sample Count Is Not Enough* (2026) shows that batched generation of 8 candidates uses about 4.6–4.9× less GPU energy than 8 serial calls on A100s.
-- ATEST (2026) adapts the number of samples to live GPU load and energy cost. ATTS (ICLR 2026) introduces asynchronous arithmetic intensity and conformal-prediction-based asynchronous scaling.
+**Resource-aware test-time scaling.**
+- **ATEST (2026), the closest competitor:** stops sampling online using live GPU load and measured energy, on an A100 and an L40S.
+- **Measured costs on constrained hardware, used to characterise trade-offs:**
+  - EdgeReasoning;
+  - mobile-NPU TTS (EuroSys 2026);
+  - *Sample Count Is Not Enough*: batched candidate generation uses 4.6–4.9× less energy than serial calls;
+  - *The Energy Cost of Reasoning*.
+- **Latency-oriented methods:**
+  - FastTTS (ASPLOS 2026) speculates on idle GPU time while waiting on straggler beams, on consumer GPUs.
+  - Latency-aware TTS (Findings of EMNLP 2025) shows that latency-optimal and compute-optimal scaling differ.
+  - *Efficient Reasoning on the Edge* covers related techniques on Qualcomm hardware.
+- **Compute-optimal scaling under FLOPs:** Snell et al., Wu et al., Large Language Monkeys, and *When To Solve, When To Verify*.
 
-**Compute-optimal test-time scaling.**
-- Snell et al. (2024) and Wu et al. (2024) establish compute-optimal inference under FLOPs.
-- Kinetics (2025) adds memory traffic in multi-tenant serving.
-- Latency-aware test-time scaling (EMNLP Findings 2025) shows that compute-optimal is not latency-optimal on datacenter GPUs.
-- FreeWidth measures the single-tenant device curve directly and schedules on it live.
-
-**Early-stopped sampling.** (ESC, RASC, ReASC, CASE, ST-BoN and Speculative Rejection also stop or prune samples early.)
-- Adaptive-Consistency (Aggarwal et al. 2023) stops sequential sampling with a Beta criterion.
-- short-m@k (Hassid et al. 2025) stops when the first *m* of *k* finish.
-- DeepConf (Fu et al. 2026) filters by trace confidence.
-- QuorumStop applies the posterior stop to the finishing order inside a static batch, where the slowest row sets the cost. short-m@k and DeepConf are baselines in the offline pipeline.
+**Early stopping and in-batch truncation.**
+- **Sequential adaptive stopping:**
+  - Adaptive-Consistency, ReASC and CGES use a Beta or Bayesian posterior.
+  - ESC stops when a window of samples agrees.
+  - ConSol uses a sequential probability ratio test, and shows that repeated checking inflates the error rate of Adaptive-Consistency's rule.
+  - CASE, RASC, DeepConf and Certaindex also stop early.
+- **Concurrent samples that stop the batch and cancel the rest:**
+  - short-m@k (stop at the first *m* finished);
+  - First Finish Search (*m* = 1);
+  - SART;
+  - **DUCHESS** (a fixed agreement quorum, the closest to QuorumStop);
+  - Parallel-Probe and MARS (which force partial answers from unfinished samples);
+  - Funnel of Thoughts.
+- **Truncation by quality signals:** ST-BoN, Speculative Rejection and Slim-SC.
 
 **Verification and cascades.**
-- Singhi et al. (2025) find self-consistency beats generative verification under FLOPs.
-- FrugalGPT and speculative cascades (Narasimhan et al. 2025) route between models.
-- ConfSpec, MSV and MARS gate or stop generation with verifiers.
-- `overlap` differs in running cross-model prefill verification concurrently on a second device, with veto and speculative escalation.
+- **Single-pass P(Yes) verification** is the GenRM formulation.
+- **Large-model prefill judging of small-model output** is used by SpecReason (which names overlapping the two models as future work) and SpecAgent.
+- **Asynchronous and streaming verification:** ATTS (asynchronous draft sampling and target verification), and streaming multi-sequence verifiers (MSV), which stop as soon as one candidate passes.
+- **Cascades:** FrugalGPT, speculative cascades, C3PO, AutoMix, and mixture-of-thought consistency cascades, which escalate from a weak model to a strong one on low agreement among the weak model's samples. The last is the closest to `overlap`'s disagreement trigger.
+- **Comparison with `overlap`:** no published system was found that runs per-candidate verification on a second GPU concurrently with the small model's sampling, with veto and speculative start and cancel of the large model.
 
 **Error localisation and repair.**
-- StepBack (2026) localises the first error and resamples.
-- Shen et al. (2026) show a few decision tokens carry most of the gap between a base model and a reasoning model.
-- SpecAgent (2026) repairs a weak draft with a strong model.
-- Read-Locate-Fork combines verdict and location in one pass with a one-token intervention. It did not outperform simpler ladders here (§5.3).
+- Speculative-decoding verification (find the first rejected token; the target writes it; the draft continues) is the structural template for Read-Locate-Fork.
+- Decision-token correction (Shen et al. 2026), StepBack, SpecAgent, R2R and MentorCollab localise and repair errors at the token or step level.
 
 **Verifier bias.**
-- Tsui (2025) documents the self-correction blind spot that explains §5.4.
+- Khullar et al. (2026) define self-attribution bias in monitors, and find it weak for content written by another model.
+- Tsui (2025) documents the self-correction blind spot.
+- Self-preference in LLM judges is studied by Panickssery et al. (2024).
+
+**Statistical practice.**
+- Miller (2024) recommends standard errors, paired analysis and power analysis for LLM evaluations.
+- Hochlehnert et al. (2025) show seed variance of 5–15 points on reasoning benchmarks.
+- van Miltenburg et al. (2021) propose pre-registration for NLP research.
 
 ## 11. References
 
@@ -456,6 +537,35 @@ python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limi
 - Tsui. *Self-Correction Bench: Uncovering and Addressing the Self-Correction Blind Spot in Large Language Models.* arXiv:2507.02778.
 - Wang et al. *Self-Consistency Improves Chain of Thought Reasoning.* ICLR 2023.
 - Wu et al. *Inference Scaling Laws.* arXiv:2408.00724.
+- Agarwal, Sengupta, Chakraborty. *First Finish Search.* arXiv:2505.18149.
+- Aghazadeh et al. *Confidence-Guided Early Stopping for Efficient and Accurate Self-Consistency* (CGES). arXiv:2511.02603.
+- Brown et al. *Large Language Monkeys.* arXiv:2407.21787.
+- Chen et al. *MARS: Margin-Adversarial Risk-controlled Stopping for Parallel LLM Test-time Scaling.* arXiv:2606.12935.
+- Hochlehnert et al. *A Sober Look at Progress in Language Model Reasoning: Pitfalls and Paths to Reproducibility.* COLM 2025. arXiv:2504.07086.
+- Hong et al. *Slim-SC: Thought Pruning for Efficient Scaling with Self-Consistency.* arXiv:2509.13990.
+- Jiang, Shahout, Du, Mitzenmacher, Yu. *Intra-Request Branch Orchestration for Efficient LLM Reasoning* (DUCHESS). arXiv:2509.24957.
+- Jin, Wei, Brooks. *The Energy Cost of Reasoning: Analyzing Energy Usage in LLMs with Test-time Compute.* arXiv:2505.14733.
+- Khullar, Hopkins, Wang, Roger. *Self-Attribution Bias: When AI Monitors Go Easy on Themselves.* arXiv:2603.04582.
+- Kim, Yang, Min, Jung. *Reliability-Aware Adaptive Self-Consistency* (ReASC). arXiv:2601.02970.
+- Lee et al. ConSol (sequential probability ratio test over the top-two answers). arXiv:2503.17587.
+- Lee, Phanishayee, Mahajan. *Forecasting GPU Performance for Deep Learning Training and Inference* (NeuSight). ASPLOS 2025. arXiv:2407.13853.
+- Li et al. *Escape Sky-high Cost: Early-stopping Self-Consistency for Multi-step Reasoning* (ESC). ICLR 2024. arXiv:2401.10480.
+- Miller. *Adding Error Bars to Evals: A Statistical Approach to Language Model Evaluations.* arXiv:2411.00640.
+- Mitra et al. *Characterizing State Space Model and Hybrid Language Model Performance with Long Context.* ISPASS 2026. arXiv:2507.12442.
+- Panickssery, Bowman, Feng. *LLM Evaluators Recognize and Favor Their Own Generations.* arXiv:2404.13076.
+- Park et al. *Funnel of Thoughts.* arXiv:2608.15065.
+- *SpecReason: Fast and Accurate Inference-Time Compute via Speculative Reasoning.* NeurIPS 2025. arXiv:2504.07891.
+- *Parallel Test-Time Scaling with Multi-Sequence Verifiers* (MSV). arXiv:2603.03417.
+- Ouyang, Kim. *StepBack.* NeurIPS 2026. arXiv:2611.08403.
+- van Miltenburg, van der Lee, Krahmer. *Preregistering NLP Research.* NAACL 2021. arXiv:2103.06944.
+- Wang et al. *M1: Towards Scalable Test-Time Compute with Mamba Reasoning Models.* arXiv:2504.10449.
+- Wang, Jiang, Cui, Fu. *Thinking Short and Right Over Thinking Long: Serving LLM Reasoning Efficiently and Accurately* (SART). arXiv:2505.13326.
+- Wang et al. *Sampling-Efficient Test-Time Scaling: Self-Estimating the Best-of-N Sampling in Early Decoding* (ST-BoN). NeurIPS 2025. arXiv:2503.01422.
+- Wang, Wang, Feng, Hajishirzi, Tsvetkov. *MentorCollab.* arXiv:2602.05307.
+- Yue et al. *Large Language Model Cascades with Mixture of Thought Representations for Cost-Efficient Reasoning.* ICLR 2024. arXiv:2310.03094.
+- Zhang et al. *Generative Verifiers: Reward Modeling as Next-Token Prediction* (GenRM). ICLR 2025. arXiv:2408.15240.
+- Zheng et al. *Parallel-Probe.* arXiv:2602.03845.
+- Fu et al. *Roads to Rome* (R2R). NeurIPS 2025.
 
 The full bibliography of the offline pipeline is in [Appendix C](#appendix-c).
 
@@ -1139,7 +1249,7 @@ At a 128-token prompt with 128 new tokens, 16 parallel samples on the 0.8B model
   title   = {FreeWidth: Hardware-Aware Test-Time Compute for Small Language Models},
   year    = {2026},
   url     = {https://github.com/Tejascodz/freewidth},
-  version = {0.7.2}
+  version = {0.7.3}
 }
 ```
 
