@@ -4,7 +4,7 @@ title: "FreeWidth: hardware-conditional test-time compute scaling"
 type: software
 authors:
   - given-names: Tejas
-version: 0.7.1
+version: 0.7.2
 date-released: 2026-11-16
 license: MIT
 keywords:

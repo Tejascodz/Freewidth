@@ -9,8 +9,8 @@ width x generation-length x prompt-length grid as `calibrate`. It then reads the
 free width directly from the timings at a few operating points (L, P): the largest measured
 width whose wave time is within (1 + eps) of a single sample. The value from the fitted cost
 curve is recorded alongside it. One JSON line is written per (setting, operating point) to
-`atlas.jsonl` as soon as it is measured, so an interrupted run keeps everything it finished,
-and a rerun skips finished settings.
+`atlas.<device>.jsonl` (one file per GPU) as soon as it is measured, so an interrupted run keeps
+everything it finished, and a rerun, in either GPU's worker, skips settings already measured.
 
 `analyze` compares three predictors of log2(free width), none of which may see the setting
 being predicted:
@@ -92,18 +92,19 @@ def _bytes_per_param(setting: dict) -> float:
 
 def collect(config: str, device: str, out_dir: str, shard: tuple[int, int] = (0, 1),
             max_hours: float | None = None) -> str:
-    """Measure every setting in this shard that is not already in `atlas.jsonl`."""
+    """Measure every setting in this shard that has not been measured in `out_dir` yet."""
     from .backends import make_backend
     from .profiler import _free_cuda, profile_backend
 
     sw = load_sweep(config)
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "atlas.jsonl")
-    done = set()
-    if os.path.exists(path):
-        with open(path) as f:
-            recs = [json.loads(x) for x in f if x.strip()]
-        done = {(r["setting"], r["device_arg"]) for r in recs if "error" not in r}
+    # one file per device, so concurrent workers (one per GPU) never write to the same file
+    path = os.path.join(out_dir, f"atlas.{device.replace(':', '')}.jsonl")
+    # An output folder holds one GPU type (atlas_t4, atlas_p100), so a setting measured on any of
+    # its devices counts as done. Keyed by name only: the pilot and the full sweep shard their
+    # settings differently, and a setting must not be re-measured just because it moved to the
+    # other GPU.
+    done = {r["setting"] for r in _read_records(out_dir) if "error" not in r and r.get("free_width")}
     deadline = time.time() + max_hours * 3600 if max_hours else None
     i, n = shard
     mine = [s for k, s in enumerate(sw["settings"]) if k % n == i]
@@ -113,7 +114,7 @@ def collect(config: str, device: str, out_dir: str, shard: tuple[int, int] = (0,
     specs = {**GPU_SPECS, **{k: (float(v[0]), float(v[1])) for k, v in (sw.get("gpu_specs") or {}).items()}}
     with open(path, "a") as f:
         for s in mine:
-            if (s["name"], device) in done:
+            if s["name"] in done:
                 log.info("already measured", extra={"setting": s["name"]})
                 continue
             if deadline is not None and time.time() > deadline:
@@ -190,6 +191,27 @@ def holdout_error(rows: list[dict], device: str = "", split_width: int = 16) -> 
     return {"mape": round(100 * st.mean(errs), 2) if errs else None, "n": len(errs)}
 
 
+def _record_files(out_dir: str) -> list[str]:
+    import glob
+
+    return sorted(glob.glob(os.path.join(out_dir, "atlas*.jsonl")))
+
+
+def _read_records(out_dir: str) -> list[dict]:
+    recs = []
+    for fp in _record_files(out_dir):
+        with open(fp) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    recs.append(json.loads(line))
+                except json.JSONDecodeError:   # a line cut off by a killed session
+                    log.warning("skipping a truncated line", extra={"file": fp})
+    return recs
+
+
 def _weight_bytes(backend, mspec, setting) -> float | None:
     model = getattr(backend, "model", None)
     if model is not None and hasattr(model, "get_memory_footprint"):
@@ -217,13 +239,18 @@ def _step_seconds(rows, L, P) -> float | None:
 def load_atlas(paths: list[str]) -> tuple[list[dict], list[dict]]:
     ok, failed = [], []
     for p in paths:
-        fp = os.path.join(p, "atlas.jsonl") if os.path.isdir(p) else p
-        with open(fp) as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                r = json.loads(line)
-                (failed if "error" in r or not r.get("free_width") else ok).append(r)
+        if os.path.isdir(p):
+            recs = _read_records(p)
+        else:
+            with open(p) as f:
+                recs = [json.loads(x) for x in f if x.strip()]
+        measured = {r["setting"] for r in recs if "error" not in r and r.get("free_width")}
+        for r in recs:
+            if "error" in r or not r.get("free_width"):
+                if r["setting"] not in measured:     # a failure later fixed by a retry is not a failure
+                    failed.append(r)
+            else:
+                ok.append(r)
     return ok, failed
 
 

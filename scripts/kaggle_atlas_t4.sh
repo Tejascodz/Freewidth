@@ -10,6 +10,7 @@ OUT=${OUT:-/kaggle/working/atlas_t4}
 CONFIG=${CONFIG:-configs/atlas_t4.yaml}
 pip install -q -r requirements-gpu.txt bitsandbytes
 nvidia-smi -L
+mkdir -p "$OUT"
 LEFT=$(python -c "import time; print(round($SESSION_HOURS - (time.time() - $START) / 3600 - 0.15, 2))")
 echo "time budget per worker: $LEFT h"
 python -m freewidth atlas collect --config "$CONFIG" --device cuda:0 --shard 0/2 \
