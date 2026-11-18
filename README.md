@@ -1,33 +1,43 @@
 <a id="top"></a>
 
+<div align="center">
+
 # FreeWidth
 
-**Hardware-aware test-time compute for small language models.**
+**Hardware-aware test-time compute for small language models.**<br>
+Measure how many parallel samples your GPU gives you for free, then spend them well.
 
 [![ci](https://github.com/Tejascodz/freewidth/actions/workflows/ci.yml/badge.svg)](https://github.com/Tejascodz/freewidth/actions/workflows/ci.yml)
 [![security](https://github.com/Tejascodz/freewidth/actions/workflows/security.yml/badge.svg)](https://github.com/Tejascodz/freewidth/actions/workflows/security.yml)
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-
-On a single-user GPU, generating several answers in parallel costs almost the same wall time as generating one, up to a limit set by the model and the device. FreeWidth measures that limit, the **free width**, and builds a small-to-large model ladder around it. The ladder has three parts:
-
-- **Wide sampling:** the small model samples answers in parallel, sized to the measured width.
-- **Early stopping:** the batch stops as soon as the finished answers agree.
-- **Live checking:** a larger model on a second GPU checks each answer as it finishes. It accepts the answer, vetoes it, or takes over and writes its own.
-
-It ships as an OpenAI-compatible server, a calibration tool, a live benchmark and a statistics reporter. Every claim below comes from pre-registered experiments on free Kaggle GPUs.
-
-| | accuracy | median latency | energy per question |
-|---|---|---|---|
-| Qwen3.5-4B alone, on both GPUs | 95.7% | 40.2 s | 5.7 kJ |
-| **FreeWidth `overlap`** (0.8B → 4B) | **93.7%** | **20.9 s** | **3.2 kJ** |
-
-*GSM8K, 300 questions, 2 × NVIDIA T4.*
-- The 2.0-point accuracy difference is not statistically significant (Holm-adjusted p = 0.21; 95% CI −4.7 to +0.7). It is not proof of equivalence.
-- The two rows were measured in separate sessions; a same-session confirmation is planned.
-- The 90th-percentile latency is higher for `overlap` (74.6 s vs 62.0 s).
+![api](https://img.shields.io/badge/API-OpenAI--compatible-informational)
 
 [Quickstart](#quickstart) · [How it works](#how-it-works) · [Results](#results) · [Positioning](#positioning) · [Limitations](#limitations) · [Reproduce](#reproducing-the-results)
+
+<img src="docs/figures/hero.png" width="100%" alt="Left: wall time versus number of parallel samples on a T4 for Qwen3.5-0.8B and Qwen3.5-4B, with free widths 16 and 4 marked. Right: accuracy versus median latency on GSM8K; the FreeWidth overlap policy reaches 93.7% at 20.9 s against 95.7% at 40.2 s for the 4B model alone.">
+
+</div>
+
+<table>
+<tr>
+<td align="center" width="33%"><h2>1.9×</h2>lower median latency<br><sub>20.9 s vs 40.2 s per question</sub></td>
+<td align="center" width="33%"><h2>44%</h2>less energy per question<br><sub>3.2 kJ vs 5.7 kJ</sub></td>
+<td align="center" width="33%"><h2>−2.0 pts</h2>accuracy, not significant<br><sub>93.7% vs 95.7%, Holm p = 0.21</sub></td>
+</tr>
+</table>
+
+<sub>FreeWidth `overlap` (Qwen3.5-0.8B with Qwen3.5-4B checking) against Qwen3.5-4B alone on both GPUs. GSM8K, 300 questions, 2 × NVIDIA T4. The accuracy gap is not significant, which is not proof of equivalence (95% CI −4.7 to +0.7 points). The two runs were measured in separate sessions; a same-session confirmation is planned. The 90th-percentile latency is worse for `overlap` (74.6 s vs 62.0 s).</sub>
+
+## Overview
+
+On a single-user GPU, small-batch decoding is limited mostly by memory bandwidth and kernel launches, not by arithmetic. Generating several answers in parallel therefore costs almost the same wall time as generating one, up to a limit set by the model and the device. FreeWidth measures that limit, the **free width**, and builds a small-to-large model ladder around it:
+
+- **Wide sampling.** The small model samples a wave of answers in parallel, sized to the measured free width.
+- **Early stopping.** The wave stops as soon as the finished answers settle, and unfinished rows are cut.
+- **Live checking.** A larger model on a second GPU scores each answer with one forward pass as it finishes. It accepts the answer, vetoes it, or starts writing its own.
+
+It ships as an OpenAI-compatible server, a calibration tool, a live benchmark and a statistics reporter, with 1-GPU and 2-GPU configurations. Every result in this README comes from pre-registered experiments on free Kaggle GPUs, with the raw per-question rows committed.
 
 ---
 
@@ -96,20 +106,9 @@ The same free widths were measured in every calibration session.
 
 ### The `overlap` ladder
 
-```mermaid
-flowchart LR
-    Q["Request"] --> W["Small model, GPU 0<br/>wave of free width"]
-    W -- "each finished answer" --> V["Large model, GPU 1<br/>one-pass check: P(Yes)"]
-    V -- "P(Yes) >= 0.95 and 2+ votes" --> A["Accept"]
-    V -- "P(Yes) < 0.2" --> X["Veto"]
-    W -- "majority forms" --> U{"Large model<br/>sure?"}
-    U -- "no" --> B
-    W -- "disagreement, stragglers" --> B["Large model writes<br/>its own answer (GPU 1)"]
-    X --> B
-    B --> F["Answer"]
-```
+<p align="center"><img src="docs/figures/architecture.svg" width="100%" alt="Swimlane diagram: on GPU 0 the small model decodes a wave of samples; each finished answer is scored by the large model on GPU 1 with one prefill pass; two matching answers with P(Yes) of at least 0.95 are accepted and the rest of the wave is cut; low scores veto an answer; uncertain cases escalate to the large model decoding its own answers."></p>
 
-*Figure 2.* The small model's sampling and the large model's checking run at the same time on separate GPUs.
+*Figure 2.* One question under `overlap`. The small model's sampling and the large model's checking run at the same time on separate GPUs. In this example the second answer is vetoed, the third matches the first, and the wave stops before the remaining rows finish.
 
 | rule | condition | action |
 |---|---|---|
