@@ -57,7 +57,7 @@ class OverlapController:
     def __init__(self, width: int, tau: float, *, veto_lo: float = 0.2, accept_hi: float = 0.95,
                  require_verified: bool = True, min_finished: int = 2, trigger_min_finished: int = 4,
                  trigger_lead_prob: float = 0.6, runaway_factor: float = 2.0,
-                 runaway_min_finished: int = 4, speculative: bool = True, quorum_accept: bool = True):
+                 runaway_min_finished: int = 4, speculative: bool = True, quorum_accept: bool = False):
         self.width = width
         # False (H10): a majority the big model has checked but is unsure about (veto_lo <= P(Yes)
         # < accept_hi) is not accepted; the big model is started on it instead.

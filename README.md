@@ -1,622 +1,344 @@
 <a id="top"></a>
 
-# FreeWidth: Hardware-Aware Test-Time Compute for Small Language Models
+# FreeWidth
+
+**Hardware-aware test-time compute for small language models.**
 
 [![ci](https://github.com/Tejascodz/freewidth/actions/workflows/ci.yml/badge.svg)](https://github.com/Tejascodz/freewidth/actions/workflows/ci.yml)
 [![security](https://github.com/Tejascodz/freewidth/actions/workflows/security.yml/badge.svg)](https://github.com/Tejascodz/freewidth/actions/workflows/security.yml)
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.12-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
-**Abstract.** Test-time compute strategies (parallel sampling with voting, sequential sampling, escalation to a larger model, verification) are usually compared by FLOPs. On a single-tenant, memory-bandwidth-bound accelerator, that cost model is wrong in a specific, measurable way: a decoding step reads the model's weights once regardless of batch width, so up to a device- and model-specific *free width*, additional parallel samples add at most a fixed latency budget (here 25%) over a single sample.
+On a single-user GPU, generating several answers in parallel costs almost the same wall time as generating one, up to a limit set by the model and the device. FreeWidth measures that limit, the **free width**, and builds a small-to-large model ladder around it. The ladder has three parts:
 
-FreeWidth does three things:
+- **Wide sampling:** the small model samples answers in parallel, sized to the measured width.
+- **Early stopping:** the batch stops as soon as the finished answers agree.
+- **Live checking:** a larger model on a second GPU checks each answer as it finishes. It accepts the answer, vetoes it, or takes over and writes its own.
 
-- It **measures** the free width per device and model by fitting a parametric cost curve to timed decodes. On an NVIDIA T4: 16 for Qwen3.5-0.8B and 4 for Qwen3.5-4B (in-sample fit R² ≥ 0.997; held-out validation is part of E6). The criterion is the sample-axis counterpart of *near-free parallelism* (He et al. 2026), which uses the same latency test for decode positions per forward pass.
-- It **runs** small-to-large model ladders live: waves sized to the free width, an in-wave Bayesian early stop (QuorumStop), and single-pass prefill verification by the larger model, streamed across a second GPU.
-- It **evaluates** them under a pre-registered protocol: exact paired tests with Holm correction, Wilson intervals, paired bootstrap and power analysis.
+It ships as an OpenAI-compatible server, a calibration tool, a live benchmark and a statistics reporter. Every claim below comes from pre-registered experiments on free Kaggle GPUs.
 
-**Main result.** On 300 GSM8K problems on two free Kaggle T4 GPUs, the best ladder (`overlap`) reaches 89.3% accuracy at a 19.3 s median latency and 2.85 kJ per question. The 4B model alone, run data-parallel on both GPUs, reaches 95.7% at 40.2 s and 5.71 kJ.
+| | accuracy | median latency | energy per question |
+|---|---|---|---|
+| Qwen3.5-4B alone, on both GPUs | 95.7% | 40.2 s | 5.7 kJ |
+| **FreeWidth `overlap`** (0.8B → 4B) | **93.7%** | **20.9 s** | **3.2 kJ** |
 
-Both pre-registered superiority claims failed:
-- `overlap` is 6.3 points less accurate than the large model alone (Holm-adjusted p = 6×10⁻⁴).
-- The proposed Read-Locate-Fork repair policy is less accurate and slower than `overlap`.
+*GSM8K, 300 questions, 2 × NVIDIA T4.*
+- The 2.0-point accuracy difference is not statistically significant (Holm-adjusted p = 0.21; 95% CI −4.7 to +0.7). It is not proof of equivalence.
+- The two rows were measured in separate sessions; a same-session confirmation is planned.
+- The 90th-percentile latency is higher for `overlap` (74.6 s vs 62.0 s).
 
-Error analysis attributes almost all of `overlap`'s deficit to a single acceptance path. On 28 of 300 questions, a small-model majority was accepted after the verifier was uncertain; `overlap` answered 13 of them correctly, the large model 26.
-
-**Pre-registered follow-up (H10, §5.6).** `overlap` was changed to escalate those questions to the 4B instead of accepting them, and run on the same 300 questions. Both pre-registered criteria were met:
-- **Accuracy:** 93.7% (90.3–95.9). That is not significantly below the large model alone (−2.0 points, 95% CI −4.7 to +0.7, Holm p = 0.21), and significantly above the original `overlap` (+4.3 points, Holm p = 0.002).
-- **Latency and energy:** 6.2 s lower mean latency than the large model alone (95% CI −9.3 to −3.1), about half the median latency (20.9 s vs 40.2 s), and 44% less energy per question.
-
-Two qualifiers apply:
-- The large-model baseline comes from an earlier Kaggle session. As pre-registered, the result is confirmed only after a same-session rerun (E1c).
-- "Not significantly lower" is not equivalence: the 95% interval still allows a deficit of up to 4.7 points.
-
-**Positioning.** A literature review covering about 90 papers (November 2026, §6 and §10) found that **none of FreeWidth's components is new on its own**:
-- the free-width criterion follows He et al. (2026);
-- QuorumStop is an adaptive-quorum variant of short-m@k and DUCHESS;
-- the two-GPU ladder composes published cascade and verification ideas.
-
-The contribution is an integration and measurement study: a pre-registered, energy-measured evaluation on one consumer GPU pair, and width–latency curves for hybrid Gated-DeltaNet models, for which no published batch-latency measurements were found.
+[Quickstart](#quickstart) · [How it works](#how-it-works) · [Results](#results) · [Positioning](#positioning) · [Limitations](#limitations) · [Reproduce](#reproducing-the-results)
 
 ---
 
-## Contents
-
-1. [Problem](#1-problem)
-2. [Free width: measuring the real cost of parallel samples](#2-free-width-measuring-the-real-cost-of-parallel-samples)
-3. [System design](#3-system-design)
-4. [Evaluation methodology](#4-evaluation-methodology)
-5. [Results](#5-results)
-6. [Discussion](#6-discussion)
-7. [Limitations and threats to validity](#7-limitations-and-threats-to-validity)
-8. [Reproducing the results](#8-reproducing-the-results)
-9. [Engineering: API, security, testing](#9-engineering-api-security-testing)
-10. [Related work](#10-related-work)
-11. [References](#11-references)
-
-Appendices: [A. Pre-registered experiments](#appendix-a) · [B. Engine and server reference](#appendix-b) · [C. Offline research pipeline](#appendix-c) · [D. Code architecture](#appendix-d) · [E. Earlier runs](#appendix-e)
-
----
-
-## 1. Problem
-
-A deployment that answers questions with a small model can spend extra inference compute in three ways:
-
-- **Wider:** sample *n* answers and vote.
-- **Longer:** reason for more tokens, or sample sequentially until confident.
-- **Escalate:** hand the question to a larger model, which can either *write* its own answer (decode) or only *read* the small model's answers (verify).
-
-The compute-optimal choice has been studied extensively (Snell et al. 2024; Wu et al. 2024; Kinetics 2025). Those studies price strategies in FLOPs, or in memory traffic of a multi-tenant datacenter. Neither matches a common deployment: **one user, one or two commodity GPUs, small batch sizes**. Two questions follow:
-
-1. What does a parallel sample actually cost on such hardware, and how should a ladder be scheduled around that cost?
-2. Measured end to end, with honest baselines and statistics, does a small-to-large ladder beat simply running the large model?
-
-## 2. Free width: measuring the real cost of parallel samples
-
-**Cost model.** For a wave of *w* parallel samples with prompt length *P* and *L* generated tokens, wall time on a single-tenant device is fitted as
-
-```
-T(w, L, P) = e + d·w·P + a·L + b·w·L + g·w·(L·P + L(L+1)/2)
-```
-
-with non-negative least squares over timed, forced-length decodes. The grid is widths {1, 2, 4, 8, 16, 32} × generation lengths {1, 32, 128} × prompt lengths {128, 512}, with a warm-up pass per shape (Triton JIT) and 2 repeats. Calibration is repeated automatically if R² < 0.97. The `a·L` term is the per-step cost that does not depend on width (dominated by reading the weights); the `w` terms are the per-sequence work. Energy is fitted the same way from NVML counters.
-
-**Definition.** The *free width* is the largest *w* with `T(w) ≤ (1 + ε)·T(1)` at the deployment's typical prompt and generation length (ε = 0.25).
-
-**Relation to prior definitions.**
-- He et al. (2026) define *near-free parallelism* with the same test, `T(N) ≤ (1 + ε)·T(1)` with ε = 0.2. There, *N* is the number of decode positions in one forward pass (speculative verification, multi-token prediction, diffusion blocks), on datacenter GPUs with vLLM and SGLang. They show that a roofline estimate can over-predict the boundary by up to 23×.
-- Serving systems use the analogous batch-axis notion of a saturation batch size, or "knee" (*Mind the Memory Gap*, 2025).
-- Free width applies the same latency criterion to the number of independent samples per question, on consumer GPUs, as a scheduling parameter for test-time scaling.
-
-**Measurement** (Kaggle T4, 16 GB, fp16, transformers + flash-linear-attention; identical across three independent sessions):
-
-| model | architecture | free width | fit R² |
-|---|---|---|---|
-| Qwen3.5-0.8B | hybrid (Gated DeltaNet + attention) | **16** | 0.998 |
-| Qwen3.5-4B | hybrid (Gated DeltaNet + attention) | **4** | 0.997 |
-
-<p align="center"><img src="docs/figures/t4_free_width.png" width="600" alt="Wave time relative to one sample versus wave width on a T4, compared with FLOP-proportional cost"></p>
-
-*Figure 1.* Wave time relative to a single sample (log–log). Under a FLOP model, 16 samples cost 16×. Measured, they cost about 1.2× (0.8B). The 4B curve bends earlier; this run did not isolate why.
-
-**Consequence.** Within the free width, self-consistency costs at most 1.25× the latency of one sample. This is near-free under the stated budget, not literally free. Beyond it, cost grows close to linearly. A scheduler that ignores this either leaves cheap samples unused or pays full price for samples it believes are cheap.
-
-**What R² does and does not show.** The R² values are in-sample: they measure how well the curve fits the calibration points it was fitted to. They do not show that the curve predicts unmeasured widths, other models or other GPUs. The atlas (E6) adds two out-of-sample checks:
-- the curve is fitted on widths ≤ 16 and scored on the measured widths 32 and 64;
-- the free width read from the fitted curve is compared with the free width read directly from timings.
-
-## 3. System design
-
-### 3.1 Overview
-
-FreeWidth has two parts that share the cost model:
-
-- **Live engine:** an OpenAI-compatible server and Python library that answers requests on a model ladder.
-- **Offline pipeline:** profile, bank samples, verify, then replay 12 strategy families under three cost models ([Appendix C](#appendix-c)).
-
-```mermaid
-flowchart LR
-    Q["Request"] --> W["Small model, GPU 0<br/>wave of free width"]
-    W -- "each finished row" --> V["Large model, GPU 1<br/>prefill verification P(Yes)"]
-    V -- "P(Yes) >= 0.95 and 2+ votes" --> A["Accept (verified)"]
-    V -- "P(Yes) < 0.2" --> X["Veto majority"]
-    W -- "QuorumStop: confident majority" --> U{"Verifier<br/>uncertain?"}
-    U -- "E1: accept" --> AQ["Accept (quorum)"]
-    U -- "H10: escalate" --> B
-    W -- "disagreement, stragglers" --> B["Large model decodes<br/>(speculative, GPU 1)"]
-    X --> B
-    B --> F["Answer from large model"]
-```
-
-*Figure 2.* The `overlap` policy. The small model's wave and the large model's verification run concurrently on separate GPUs.
-
-### 3.2 QuorumStop: early stopping inside a lock-step wave
-
-In a static batch, the slowest row sets the wave's cost, and rows finish at different steps. Wrong reasoning chains tend to be longer. QuorumStop evaluates, each time a row finishes, the posterior probability that the current leading answer is the true mode. It uses the top-two Beta reduction of Adaptive-Consistency (Aggarwal et al. 2023):
-
-```
-p_lead = P(θ > 0.5),  θ ~ Beta(n₁ + 1, n₂ + 1)
-```
-
-Here *n₁* and *n₂* are the vote counts of the two most frequent extracted answers. When `p_lead ≥ τ` (τ = 0.9), the whole wave stops, and unfinished rows are cut and do not vote. It is implemented as a `transformers` `StoppingCriteria`, so the saving is real wall time, not a replayed estimate.
-
-**What this rule amounts to in practice:**
-- **Earliest stops.** At τ = 0.9, two agreeing rows give p_lead = 0.875, which is not enough. The earliest possible stops are 3–0 (0.9375), then 5–1 and 6–2. The configured guard of "at least 2 finished rows" therefore never binds.
-- **Easy questions:** QuorumStop behaves like short-3@k (Hassid et al. 2025). It differs only when the first rows to finish disagree.
-- **At the 4B model's width of 4:** it reduces to "cut the fourth row if the first three agree".
-- **p_lead is a heuristic score, not a calibrated probability.** Rows finish shortest-first, so the votes seen so far are a length-biased sample, not independent draws. Checking after every finished row is also the repeated-testing pattern that ConSol (Lee et al. 2025) shows inflates error rates under this rule.
-
-**Prior art.** QuorumStop is an adaptive-quorum variant of in-batch truncation: short-m@k, First Finish Search, SART and, closest, DUCHESS (fixed agreement quorum, cancel the rest). It uses Adaptive-Consistency's stopping rule.
-
-### 3.3 Prefill verification
-
-The large model never decodes to verify. A candidate solution is placed in a grading prompt, and one forward pass gives
-
-```
-P(Yes) = p(Yes) / (p(Yes) + p(No))
-```
-
-over the next-token distribution, summed over the tokenizer's Yes/No variants. The cost is one prefill, which is far below a decode of comparable length. The framing of this prompt turned out to matter more than any threshold (§5.4).
-
-### 3.4 Policies
-
-| policy | role | mechanism |
-|---|---|---|
-| `freewidth` | proposed (sequential) | Small-model waves at free width with QuorumStop. If not confident, the large model prefill-verifies the top candidates. If none is verified, the large model decodes. |
-| `overlap` | proposed (concurrent) | As Figure 2. Each finished small-model row is verified immediately on the second GPU. The table below lists the decision rules. |
-| `repair` | proposed | **Read-Locate-Fork.** One large-model pass gives the verdict and the first flawed token: the first solution token with probability < 0.05 while the large model prefers another token with ≥ 0.5. The large model writes that one token, and the small model resamples from the fork in a free-width batch. |
-| `big_sc` | baseline | The large model alone, 8 samples, majority vote, one GPU. |
-| `big_sc2` | baseline | The large model alone on both GPUs (4 + 4 samples at its free width) with one QuorumStop shared across devices. |
-| `sc`, `hwave`, `single` | baselines | Self-consistency, free-width waves without verification, one sample. |
-
-`overlap` decision rules, evaluated each time a row finishes:
-
-| rule | condition | action |
-|---|---|---|
-| verified accept | an answer has ≥ 2 votes and verifier P(Yes) ≥ 0.95 | accept |
-| quorum accept | QuorumStop fires, the answer has been verified, and 0.2 ≤ P(Yes) < 0.95 | accept (E1). With H10 (`quorum_accept: false`), escalate instead |
-| veto | the leading answer's best P(Yes) < 0.2 | block acceptance; start the large model |
-| disagreement trigger | ≥ 4 rows finished and `p_lead` < 0.6 | start the large model speculatively |
-| straggler cut | ≥ 4 rows finished and step > 2 × median finished length | cut running rows; trigger if a third or more of the rows are still running |
-
-If the small model accepts after the large model has started, the large model's run is cancelled.
-
-## 4. Evaluation methodology
-
-| item | setting |
-|---|---|
-| Hardware | Kaggle, 2 × NVIDIA T4 (16 GB, about 320 GB/s), free tier |
-| Models | Qwen3.5-0.8B (GPU 0) and Qwen3.5-4B (GPU 1), fp16, non-thinking mode |
-| Software | PyTorch, transformers 5, flash-linear-attention; FreeWidth 0.5.0 for E1 |
-| Data | GSM8K test. 300 questions sampled with seed 0 (a superset of the 100 used in earlier runs) |
-| Decoding | temperature 0.7, top-p 1.0, at most 1,024 new tokens, `\boxed{}` answer format |
-| Grading | numeric exact match after normalisation; math-verify for symbolic answers |
-| Metrics | accuracy; wall-clock seconds per question (mean, median, p90); energy per question (NVML, GPUs used); share of questions where the large model decoded |
-
-**Statistical protocol.**
-- **Pre-registration.** For each experiment, the primary comparisons, the sample size and the pass/fail criteria are committed before the run ([Appendix A](#appendix-a)). Only primary comparisons support claims; everything else is reported as exploratory.
-- **Accuracy:** Wilson 95% intervals.
-- **Paired accuracy differences:** exact McNemar test on the questions both policies answered, with Holm correction within the primary family.
-- **Paired differences in accuracy and latency:** bootstrap 95% intervals, 10,000 resamples, fixed seed.
-- **Sample size:** chosen with McNemar power analysis (80% power, α = 0.05) using the previous run's discordance rates. That analysis gave about 280 questions for the `overlap` vs large-model contrast, so E1 used 300.
-- **Provenance.** Every reported number is produced by `python -m freewidth report` from the committed per-question rows. None is computed by hand.
-
-## 5. Results
-
-### 5.1 Main results (E1)
-
-All policies were run in the same session on the same 300 questions.
-
-| policy | accuracy (95% CI) | mean s | median s | p90 s | energy (kJ) | large model decoded |
-|---|---|---|---|---|---|---|
-| `big_sc2` (4B, both GPUs) | **95.7%** (92.7–97.5) | 43.4 | 40.2 | **62.0** | 5.71 | 100% |
-| `overlap` | 89.3% (85.3–92.3) | **34.5** | **19.3** | 73.9 | **2.85** | 34% |
-| `repair` | 84.0% (79.4–87.7) | 60.0 | 22.5 | 185.2 | 3.97 | 14% |
-
-<p align="center"><img src="results/t4_gsm8k_E1_2026-11-16/report/accuracy_latency.png" width="600" alt="Accuracy versus median latency for big_sc2, overlap and repair"></p>
-
-*Figure 3.* Accuracy (Wilson 95% interval) against median latency.
-
-### 5.2 Pre-registered tests
-
-Holm correction is applied over the two primary comparisons.
-
-| comparison (A → B) | B better / worse | Holm p | Δ accuracy, points (95% CI) | Δ mean s (95% CI) | criterion | outcome |
-|---|---|---|---|---|---|---|
-| `big_sc2` → `overlap` | 4 / 23 | 6.2×10⁻⁴ | −6.3 (−9.7, −3.0) | −9.0 (−12.0, −6.0) | faster *and* not significantly less accurate | **fails** on accuracy |
-| `overlap` → `repair` | 7 / 23 | 5.2×10⁻³ | −5.3 (−9.0, −2.0) | +25.6 (+20.1, +31.1) | not significantly less accurate than `overlap` | **fails** |
-
-`overlap` is a latency–energy trade-off against the large model: half the median latency and half the energy, for 6.3 points of accuracy. It is not a dominant system.
-
-### 5.3 Error analysis
-
-**`overlap`, by acceptance path:**
-
-| acceptance path | n | accuracy | mean s |
-|---|---|---|---|
-| verified accept (P(Yes) ≥ 0.95) | 188 | 93.6% | 17.2 |
-| large model decoded | 82 | 95.1% | 77.1 |
-| quorum accept with uncertain verifier (0.2 ≤ P(Yes) < 0.95) | **28** | **46.4%** | 19.0 |
-| other | 2 | — | — |
-
-- **Excluding the 28 quorum accepts, `overlap` is 93.8% accurate (255/272).** On those 28, `big_sc2` was correct on 26.
-- **The deficit is therefore concentrated in one decision rule.** If those questions were escalated, and the large model were as accurate on them as `big_sc2` was, the upper bound is about 93.7% overall at roughly +4–5 s mean latency.
-- This motivates **H10**: implemented as `quorum_accept: false` and pre-registered as E1b. It is an estimate, not a result.
-
-**`repair`, by acceptance path:**
-
-| acceptance path | n | accuracy | mean s |
-|---|---|---|---|
-| small-model quorum | 224 | 83.5% | 25.5 |
-| large model decoded after a failed repair | 43 | 90.7% | 205.1 |
-| verified candidate | 26 | 73.1% | 104.0 |
-| repaired (fork succeeded) | 7 | 100% | 110.7 |
-
-- **The fork rarely succeeded.** It was attempted on 50 questions and succeeded on 7, all correct.
-- **Failed repairs are what make `repair` slow.** They fall back to a full large-model decode after the repair attempt (205 s mean).
-- **Repair's main weakness is upstream.** It inherits the weak small-model quorum gate (83.5% on 224 questions).
-
-### 5.4 The verifier is sensitive to who appears to have written the answer
-
-In the first version of `repair` (run 2), the candidate solution was placed in the large model's *own* assistant turn. On the same candidates, the median P(Yes) was:
-- **0.99** with self-attribution;
-- **0.10** in a third-party grading prompt.
-
-With the first framing, the verifier accepted almost everything, and verified accepts were only 42% accurate. The third-party framing used since 0.4.1 raised verified-accept accuracy to 73%, which is still below what a gate needs.
-
-**How this relates to prior work, and what is not established.**
-- **The direction is documented.** Khullar et al. (2026) show that monitors judge the same action as more correct when it sits in a prior assistant turn. Tsui (2025) reports the mirror effect for self-correction.
-- **Two caveats apply to our data point:**
-  1. **Confound.** Our two conditions changed both the placement of the candidate (assistant turn vs user turn) and the wording of the question ("is your solution correct?" vs a grading prompt). The effect cannot yet be attributed to placement alone.
-  2. **Conflict with prior work.** Khullar et al. found the effect "greatly reduced or absent" when the assistant-turn content came from a different model. Here it came from the 0.8B model, yet the shift was 0.99 vs 0.10.
-- **Until a placement-only ablation is run**, this is reported as a framing effect, not as self-attribution bias.
-
-### 5.5 Earlier runs and repeatability
-
-Runs 1–2 used 100 questions each and the one-GPU `big_sc` baseline ([Appendix E](#appendix-e)). Exploratory results on the 100 questions shared with E1:
-
-- **Free width** was identical in all three sessions (16 and 4).
-- **`freewidth` across runs 1 and 2:** same answer on 96 of 100 questions (78% vs 80% accuracy).
-- **`overlap` across run 2 and E1:** 88 vs 86 correct (McNemar p = 0.79); same answer on 85 of 100.
-- **Concurrency (H6, run 2).** On questions the sequential ladder could not settle, `overlap` was faster: 68.8 s vs 111.8 s.
-- **Veto (H7, run 2).** On the 13 questions where the verifier vetoed the small model's majority, `overlap` was right on 12; the sequential ladder on 8.
-- **Two-GPU baseline speed.** On identical questions, `big_sc2` (two GPUs, Python threads) had a *higher* median than `big_sc` (one GPU): 40.3 s vs 31.0 s (§7).
-
-### 5.6 Follow-up: escalating uncertain majorities (H10, E1b)
-
-**Run.** FreeWidth 0.7.3, `overlap` with `quorum_accept: false`.
-- Same 300 GSM8K questions and seeds as E1, in a new Kaggle session (T4 x2).
-- Calibration matched E1: free width 16 (R² 0.997) and 4 (R² 0.998).
-- Pre-registered in [Appendix A](#appendix-a). Statistics come from the pre-registered command: `results/t4_gsm8k_H10/vs_E1/REPORT.md`.
-
-| policy | accuracy (95% CI) | mean s | median s | p90 s | energy (kJ) | large model decoded |
-|---|---|---|---|---|---|---|
-| `big_sc2` (E1) | 95.7% (92.7–97.5) | 43.4 | 40.2 | **62.0** | 5.71 | 100% |
-| **`overlap`, H10** | **93.7%** (90.3–95.9) | **37.2** | 20.9 | 74.6 | 3.19 | 43% |
-| `overlap` (E1) | 89.3% (85.3–92.3) | 34.5 | **19.3** | 73.9 | **2.85** | 34% |
-
-<p align="center"><img src="results/t4_gsm8k_H10/vs_E1/accuracy_latency.png" width="600" alt="Accuracy versus median latency for big_sc2, overlap in E1 and H10, and repair"></p>
-
-*Figure 4.* Accuracy (Wilson 95% interval) against median latency, E1 and H10.
-
-**Pre-registered tests** (Holm over the two):
-
-| comparison (A → B) | B better / worse | Holm p | Δ accuracy, points (95% CI) | Δ mean s (95% CI) | criterion | outcome |
-|---|---|---|---|---|---|---|
-| `big_sc2` → `overlap` H10 | 5 / 11 | 0.21 | −2.0 (−4.7, +0.7) | −6.2 (−9.3, −3.1) | not significantly less accurate *and* faster | **met** |
-| `overlap` E1 → `overlap` H10 | 14 / 1 | 0.002 | +4.3 (+2.0, +7.0) | +2.8 (+1.3, +4.3) | more accurate | **met** |
-
-**The change did what it was designed to do, and nothing else.**
-- On the 28 questions that E1 accepted on an uncertain majority, H10 escalated 27 (trigger `uncertain_quorum`) and answered 27 correctly. E1 answered 13 correctly; `big_sc2` answered 26.
-- Those questions now take 56.5 s on average instead of 19.0 s.
-- On the other 272 questions, H10 gave the same answer as E1 on 271 (255 vs 254 correct). This also shows the policy is repeatable across sessions.
-- The estimate written before the run (an upper bound of about 93.7%, at +4–5 s mean) matched the outcome (93.7%, +2.8 s).
-
-**Where the remaining gap is.** All 11 questions that `big_sc2` answered correctly and H10 did not were *verified accepts*: the 4B gave P(Yes) ≥ 0.95 to a wrong answer with at least two votes. The verifier's confident errors are now the main limit, not the acceptance rule.
-
-**What this does and does not establish.**
-- **Cross-session baseline.** `big_sc2` comes from E1's session. Overlap was repeatable across sessions (271 of 272 identical answers), but the pre-registration requires a same-session rerun (E1c) before the result is treated as confirmed.
-- **Not equivalence.** "Not significantly less accurate" is not equivalence. A McNemar test would need about 1,000 questions to detect a 2-point difference with 80% power.
-- **Tail latency is worse.** The p90 latency (74.6 s) is higher than `big_sc2`'s (62.0 s): escalated questions pay for the small model's attempt first.
-- **Cost of the extra escalations.** The large model now decodes on 43% of questions instead of 34%, and mean energy rose from 2.85 to 3.19 kJ. That is still 44% below `big_sc2`.
-
-### 5.7 Hypothesis status
-
-| id | hypothesis | status | evidence |
-|---|---|---|---|
-| — | Free width is stable and measurable | supported (one GPU type, two models) | identical free widths across three sessions; in-sample R² ≥ 0.997 (out-of-sample checks pending, H15) |
-| H6 | Concurrent verification lowers escalation latency | supported | 68.8 s vs 111.8 s on hard questions (run 2) |
-| H7 | A live veto rescues confident-but-wrong majorities | supported | 12/13 vs 8/13 (run 2; small n) |
-| H8 | Read-Locate-Fork replaces large-model writing | refuted | §5.2–5.3 |
-| H9 | The large model is better used as a reader than a writer | refuted | −6.3 points, Holm p = 6.2×10⁻⁴ |
-| H10 | Escalating uncertain-verifier quorums closes the gap | **supported, pending same-session confirmation (E1c)** | both pre-registered criteria met (§5.6); cross-session comparison |
-| H11–H15 | Free-width atlas: roofline gap, size dependence, predictability, hybrid vs dense, held-out accuracy of the cost model | pending | E6, [Appendix A](#appendix-a) |
-| H1–H5 | Offline cost-model and strategy hypotheses | not yet run | [Appendix C](#appendix-c) |
-
-## 6. Discussion
-
-**What the evidence supports.**
-1. **Free width is real, large on small models, and stable.** It changes how parallel sampling should be priced on single-tenant hardware.
-2. **Concurrency matters more than cleverness.** Putting the second GPU to work while the small model decodes (streaming verification, speculative escalation) reduced latency on hard questions by about 40%.
-3. **The acceptance rule decides whether a small-to-large ladder is a trade-off or close to a free lunch.**
-   - In E1, accepting a small-model majority while the verifier was unsure cost 6.3 points against the large model alone.
-   - Escalating those cases instead (H10) brought the ladder within 2 points (not significant). It kept about half the median latency and 44% less energy, at a worse p90.
-   - The remaining errors are the verifier's confident mistakes.
-
-**What it does not support.**
-- **That a single verifier prompt is a reliable gate.** Prefill verification is cheap, but its calibration depends on framing (§5.4). A threshold between 0.2 and 0.95 left a band in which a majority was accepted and was wrong more often than right.
-
-**Practical guidance (T4 class, two GPUs):**
-- Use `big_sc2` when worst-case accuracy and p90 latency matter most.
-- Use `overlap` with `quorum_accept: false` (H10) for about half the median latency and 44% less energy. Its accuracy was within 2 points of `big_sc2` (not significant; same-session confirmation pending).
-- Do not use `repair` in its current form.
-
-**Novelty, stated narrowly.** A systematic review (November 2026; about 90 papers, each checked against the paper's own text where possible; arXiv abstract pages were unavailable, so PDF and HTML versions were used) gives the following verdict for each component:
-
-| # | component | verdict | closest prior work |
-|---|---|---|---|
-| 1 | Free width and the fitted T(w, L, P) model, used live to size waves | **engineering variant**; applying it to independent samples with live sizing is plausibly distinct in a narrow sense | He et al. 2026 (same criterion, decode positions per forward pass); EdgeReasoning and SLIM (fitted latency models); Kinetics (analytic choice of N) |
-| 2 | Predicting free width across models, GPUs and formats; hybrid Gated-DeltaNet curves on consumer GPUs | **plausibly distinct**, if the atlas (E6) delivers | He et al.; NeuSight; KernelSight-LM; SLIM. No published held-out predictor of the boundary was found, and no batch-latency sweep for a Gated-DeltaNet hybrid on any GPU |
-| 3 | QuorumStop | **engineering variant** | DUCHESS; short-m@k; Adaptive-Consistency |
-| 4 | `overlap` (two GPUs, streaming P(Yes) verification, veto, speculative start and cancel) | **engineering variant**; only the concurrent two-GPU schedule is plausibly distinct | ATTS; SpecReason (names overlapping the two models as future work); FastTTS; streaming MSV; GenRM |
-| 5 | Read-Locate-Fork | **not new**; reported as a negative result | speculative-decoding verification; decision-token correction; StepBack; SpecAgent |
-| 6 | Verifier framing effect | **not new** in direction; our data point is **unclear** because of a confound (§5.4) | Khullar et al. 2026; Tsui 2025 |
-| 7 | Pre-registered evaluation with exact McNemar and Holm | **not new** as methods; uncommon in test-time-scaling papers (no example found) | Miller 2024; van Miltenburg et al. 2021 |
-| 8 | Resource-aware test-time scaling as a whole | **plausibly distinct as an integration only** | ATEST 2026 (online, energy-measuring stopper); EdgeReasoning; mobile-NPU TTS; Energy Cost of Reasoning |
-
-**Statement of contribution.**
-- **What FreeWidth is.** An integration and measurement study of resource-aware test-time scaling on consumer GPUs, not a new algorithm family.
-- **Free width.**
-  - It follows the near-free-parallelism criterion of He et al. (2026), who define T(N) ≤ (1+ε)·T(1) for query positions within one forward pass.
-  - FreeWidth applies a tolerance of the same form (ε = 0.25) to the independent self-consistency samples of one question.
-  - It fits a per-device latency model by non-negative least squares, in the spirit of EdgeReasoning and SLIM, and uses that fit at run time to size sampling waves.
-- **New measurements.** Width–latency curves on a T4 with Hugging Face transformers, including Gated-DeltaNet hybrid models, for which no published batch-latency measurements were found. Predicting free width across models, GPUs and formats is planned work (E6).
-- **QuorumStop.** Applies Adaptive-Consistency's stopping rule to completion events inside one batch, which makes it an adaptive-quorum variant of short-m@k, closely related to DUCHESS.
-- **`overlap`.** Composes known components: GenRM-style P(Yes) verification, small-to-large cascades, asynchronous verification as in ATTS, and straggler-driven speculation as in FastTTS. Its contribution is the concurrent schedule and its measured latency and energy trade-off.
-- **Read-Locate-Fork.** A lossy variant of speculative-decoding verification combined with error-localised resampling, reported as a negative result.
-- **Evaluation.** Pre-registered hypotheses, exact McNemar tests with Holm correction, Wilson intervals, paired bootstrap and power analysis, following published recommendations.
-
-**Baselines a reviewer will expect that are not yet run.**
-
-| component | missing baselines |
-|---|---|
-| QuorumStop | short-m@k at matched width; a DUCHESS-style fixed quorum; an ATEST-style online stopper; compute-matched full self-consistency |
-| `overlap` | a sequential cascade (mixture-of-thought consistency or C3PO style); a SpecReason-style sequential judge; the same policy co-located on one GPU, to separate the concurrency gain from the cascade gain |
-| Free width | an ε sweep over 0.10–0.30; runs with and without CUDA graphs or `torch.compile`, to measure how much eager-mode kernel-launch overhead contributes |
-| Verifier framing | a placement-only ablation (same wording, role changed); a wording-only ablation; on-policy (the 4B's own answers) vs off-policy |
-
-These are listed as planned work in [Appendix A](#appendix-a).
-
-## 7. Limitations and threats to validity
-
-**Scope**
-- One GPU type (T4), one model family (Qwen3.5), one dataset with numeric answers (GSM8K).
-- MATH-500, a second model pair, the P100 and a dense-model control are planned and pre-registered (Appendix A).
-
-**Serving stack**
-- Timings use transformers' static-batch `generate`, not a paged-attention server such as vLLM or SGLang. Free widths and absolute latencies will differ there.
-
-**Concurrency**
-- `overlap` and `big_sc2` drive both GPUs from Python threads in one process.
-- The two-GPU baseline was slower than the one-GPU baseline on identical questions. The leading explanation is interpreter-lock contention at small batch sizes (unconfirmed). A process-per-GPU baseline is planned (E1c). If the explanation holds, the fair large-model baseline is faster than reported, which would widen, not narrow, the gap in §5.2.
-
-**Reproducibility**
-- Concurrent waves are not bit-reproducible.
-- Before 0.5.1, each wave reseeded all GPUs. The data shows E1's samples were not duplicated: wave token counts matched on 11 of 300 questions. Seeding is now per device.
-
-**Energy**
-- NVML energy covers the GPUs a policy used. Idle GPUs are not charged, which favours one-GPU policies.
-
-**Statistics**
-- Cross-session comparisons are exploratory unless repeated within one session (§5.5). H10 against E1 was pre-registered as primary but is cross-session, so it counts as confirmed only after the same-session rerun (E1c).
-- Runs 1–2 (100 questions) were underpowered for differences of about 5 points.
-
-**Verifier**
-- All verifier results are specific to the prompt templates in `freewidth/engine/overlap_run.py` and `repair.py`.
-- The framing result in §5.4 confounds placement with wording (see above).
-
-**Cost model**
-- The quadratic attention term in T(w, L, P) is a dense-model assumption. In the hybrid Qwen3.5 models only about a quarter of the layers use full attention; the Gated-DeltaNet layers keep a fixed-size state per sample.
-- The fit is still accurate in-sample (R² ≥ 0.997), but its terms should not be read as physical costs for hybrids. Held-out accuracy is tested in E6 (H15).
-- In eager-mode transformers on a T4, a fixed kernel-launch overhead per step probably inflates the free width of small models. This has not been measured (no CUDA-graph or `torch.compile` comparison yet).
-- Free width depends on ε. No ε sweep has been run yet. He et al. report near-invariant boundaries for ε between 0.05 and 0.30.
-
-**QuorumStop**
-- p_lead is a heuristic stopping score, not a calibrated probability (§3.2).
-- The premise that wrong chains are longer is published (short-m@k), but so is counter-evidence on hard questions (DUCHESS, MARS), so the benefit may depend on difficulty.
-
-**Missing baselines**
-- The baselines listed at the end of §6 have not been run. Until they are, claims about QuorumStop and `overlap` are relative to the baselines in §5 only.
-
-## 8. Reproducing the results
-
-Everything runs on free compute. The per-question rows and generated reports for every run are committed under [`results/`](results).
+## Quickstart
 
 ```bash
 git clone https://github.com/Tejascodz/freewidth && cd freewidth
 pip install -r requirements-dev.txt
-make lint test                     # 111 tests on a simulated device; no GPU needed
+make lint test                                        # no GPU needed: tests run on a simulated device
 
-# recompute every statistic in Section 5 from the committed rows
-python -m freewidth report results/t4_gsm8k_E1_2026-11-16 --out /tmp/e1 \
-    --primary big_sc2:overlap,overlap:repair --ladder q35-0.8b,q35-4b
+# OpenAI-compatible server on the simulated device
+python -m freewidth serve --config configs/engine_mock.yaml
+curl localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"What is 17 * 23?"}]}'
 ```
 
-**On Kaggle** (GPU T4 x2, internet on). Clone the repository in a notebook cell, then run one script per commit:
+On GPUs (`pip install -r requirements-gpu.txt`):
 
-| experiment | script | GPU time |
-|---|---|---|
-| E1 (`overlap`, `big_sc2`, `repair`) | `bash scripts/kaggle_final.sh` | about 11.8 h |
-| E1b / H10 | `bash scripts/kaggle_h10.sh` | about 3.5–4 h (capped at 5 h) |
-| E6 free-width atlas (T4 x2, calibration only) | `bash scripts/kaggle_atlas_t4.sh` | about 2–2.5 h (capped at 3.5 h) |
-| E6 free-width atlas (P100) | `bash scripts/kaggle_atlas_p100.sh` | about 1 h (capped at 1.5 h) |
-| any pre-registered experiment | `CONFIG=... DATASET=... POLICIES=... bash scripts/kaggle_experiment.sh` | varies |
+| task | command |
+|---|---|
+| Measure your GPU's free width | `python -m freewidth calibrate --config configs/engine_t4.yaml` |
+| Serve on two GPUs | `FREEWIDTH_API_KEY=$(openssl rand -hex 32) python -m freewidth serve --config configs/engine_t4.yaml` |
+| Benchmark policies live | `python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limit 300 --policies overlap,big_sc2 --max-hours 5` |
+| Statistics for any runs | `python -m freewidth report <run dir> [<run dir> ...] --out <dir> --primary a:b` |
+| Free-width sweep across models | `python -m freewidth atlas collect --config configs/atlas_t4.yaml --device cuda:0` |
+| Docker | `docker run --gpus all -p 127.0.0.1:8000:8000 -e FREEWIDTH_API_KEY=... freewidth` |
 
-**How the scripts protect a run:**
-- Each script calibrates the device first.
-- It stops starting new questions before Kaggle's session limit (`bench --max-hours`), writes every finished row to disk immediately, and builds the statistics report at the end.
-
-## 9. Engineering: API, security, testing
-
-**API.** The server is OpenAI-compatible, and the method can be chosen per request:
+The policy can be chosen per request with the OpenAI SDK:
 
 ```python
 from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8000/v1", api_key=KEY)
 client.chat.completions.create(model="freewidth", messages=[{"role": "user", "content": "What is 17 * 23?"}],
-                               extra_body={"freewidth": {"name": "overlap", "quorum_accept": False}})
+                               extra_body={"freewidth": {"name": "overlap"}})
 ```
+
+---
+
+## How it works
+
+### Free width
+
+For a wave of *w* parallel samples with prompt length *P* and *L* generated tokens, wall time on one device is fitted as
+
+```
+T(w, L, P) = e + d·w·P + a·L + b·w·L + g·w·(L·P + L(L+1)/2)
+```
+
+by non-negative least squares over timed, forced-length decodes.
+- **Grid:** widths 1–32 × generation lengths {1, 32, 128} × prompt lengths {128, 512}.
+- **Measurement:** a warm-up pass per shape, then 2 repeats.
+- **Quality check:** calibration repeats automatically if R² < 0.97.
+
+The **free width** is the largest *w* with `T(w) ≤ 1.25 · T(1)` at the deployment's typical lengths. Energy is fitted the same way from NVML counters.
+
+| model (NVIDIA T4, fp16, transformers) | architecture | free width | in-sample R² |
+|---|---|---|---|
+| Qwen3.5-0.8B | hybrid (Gated DeltaNet + attention) | **16** | 0.997–0.998 |
+| Qwen3.5-4B | hybrid (Gated DeltaNet + attention) | **4** | 0.997–0.998 |
+
+The same free widths were measured in every calibration session.
+
+<p align="center"><img src="docs/figures/t4_free_width.png" width="600" alt="Wave time relative to one sample versus wave width on a T4, compared with FLOP-proportional cost"></p>
+
+*Figure 1.* Wave time relative to a single sample. Under a FLOP-proportional model, 16 samples cost 16×. On a T4 they cost about 1.2× for the 0.8B model. Within the free width, self-consistency costs at most 1.25× one sample's latency; beyond it, cost grows close to linearly.
+
+### The `overlap` ladder
+
+```mermaid
+flowchart LR
+    Q["Request"] --> W["Small model, GPU 0<br/>wave of free width"]
+    W -- "each finished answer" --> V["Large model, GPU 1<br/>one-pass check: P(Yes)"]
+    V -- "P(Yes) >= 0.95 and 2+ votes" --> A["Accept"]
+    V -- "P(Yes) < 0.2" --> X["Veto"]
+    W -- "majority forms" --> U{"Large model<br/>sure?"}
+    U -- "no" --> B
+    W -- "disagreement, stragglers" --> B["Large model writes<br/>its own answer (GPU 1)"]
+    X --> B
+    B --> F["Answer"]
+```
+
+*Figure 2.* The small model's sampling and the large model's checking run at the same time on separate GPUs.
+
+| rule | condition | action |
+|---|---|---|
+| verified accept | an answer has ≥ 2 votes and the large model's P(Yes) ≥ 0.95 | accept |
+| uncertain majority | a majority forms and the large model's P(Yes) is between 0.2 and 0.95 | start the large model |
+| veto | the leading answer's best P(Yes) < 0.2 | block it; start the large model |
+| disagreement | ≥ 4 answers finished and no clear leader (`p_lead` < 0.6) | start the large model early |
+| straggler cut | ≥ 4 answers finished and a row runs past 2 × their median length | cut it |
+
+If the small model reaches a verified answer after the large model has started, the large model's run is cancelled.
+
+**One-pass verification.** The large model never decodes to check an answer. The candidate is shown as a proposed solution in a grading prompt, and one forward pass gives `P(Yes) = p(Yes) / (p(Yes) + p(No))` over the next token, summed over the tokenizer's Yes/No variants (as in GenRM).
+
+**QuorumStop.** Each time a row of the small model's wave finishes, the probability that the current leader is the true majority is computed with Adaptive-Consistency's rule:
+
+```
+p_lead = P(θ > 0.5),  θ ~ Beta(n₁ + 1, n₂ + 1)
+```
+
+Here *n₁* and *n₂* are the votes of the two most common answers.
+- **When it stops.** When `p_lead ≥ 0.9`, the whole wave stops, and unfinished rows are cut and do not vote. The earliest possible stop is three agreeing rows (0.9375).
+- **Implementation.** It runs as a `transformers` `StoppingCriteria`, so the saving is real wall time.
+- **What the score means.** `p_lead` is a stopping score, not a calibrated probability: rows finish shortest-first, so the finished votes are not independent draws.
+
+### Policies
+
+| policy | description | status |
+|---|---|---|
+| `overlap` | the two-GPU ladder above | recommended for latency and energy |
+| `big_sc2` | the large model alone on every GPU (4 + 4 samples at its free width), one shared QuorumStop | recommended for worst-case accuracy and p90 latency |
+| `freewidth` | sequential ladder: small-model waves, then one-pass verification, then the large model | baseline |
+| `repair` | Read-Locate-Fork: one large-model pass locates the first flawed token, the large model writes that token, the small model resamples from it | experimental, not recommended (see Results) |
+| `big_sc`, `sc`, `hwave`, `single` | large model on one GPU; self-consistency; free-width waves without verification; one sample | baselines |
+
+Full engine and API reference: [Appendix B](#appendix-b).
+
+---
+
+## Results
+
+### Setup
+
+| item | setting |
+|---|---|
+| Hardware | Kaggle, 2 × NVIDIA T4 (16 GB), free tier |
+| Models | Qwen3.5-0.8B (GPU 0) and Qwen3.5-4B (GPU 1), fp16, non-thinking mode |
+| Data | GSM8K test, 300 questions (fixed sample, seed 0) |
+| Decoding | temperature 0.7, top-p 1.0, at most 1,024 new tokens |
+| Metrics | accuracy; seconds per question (mean, median, p90); GPU energy per question (NVML); share of questions where the large model decoded |
+| Statistics | Wilson 95% intervals; exact McNemar tests on paired questions with Holm correction within each pre-registered family; paired bootstrap 95% intervals (10,000 resamples, fixed seed); McNemar power analysis for sample size |
+
+Comparisons, sample sizes and pass/fail criteria were committed before each run ([Appendix A](#appendix-a)). Every number is produced by `python -m freewidth report` from the per-question rows committed in [`results/`](results).
+
+### Main results
+
+| policy | accuracy (95% CI) | mean s | median s | p90 s | energy (kJ) | large model decoded |
+|---|---|---|---|---|---|---|
+| `big_sc2` (4B alone, both GPUs) | **95.7%** (92.7–97.5) | 43.4 | 40.2 | **62.0** | 5.71 | 100% |
+| **`overlap`** | 93.7% (90.3–95.9) | **37.2** | 20.9 | 74.6 | 3.19 | 43% |
+| `overlap`, `quorum_accept: true` (ablation) | 89.3% (85.3–92.3) | 34.5 | **19.3** | 73.9 | **2.85** | 34% |
+| `repair` | 84.0% (79.4–87.7) | 60.0 | 22.5 | 185.2 | 3.97 | 14% |
+
+<p align="center"><img src="docs/figures/results_gsm8k.png" width="600" alt="Accuracy versus median latency for the four policies"></p>
+
+*Figure 3.* Accuracy (Wilson 95% interval) against median latency. `overlap` (default) was measured in a separate session from the other three, on the same questions with the same seeds.
+
+### Pre-registered comparisons
+
+| comparison (A → B) | B better / worse | Holm p | Δ accuracy, points (95% CI) | Δ mean s (95% CI) | criterion | outcome |
+|---|---|---|---|---|---|---|
+| `big_sc2` → `overlap` | 5 / 11 | 0.21 | −2.0 (−4.7, +0.7) | −6.2 (−9.3, −3.1) | faster and not significantly less accurate | **met** |
+| `overlap` (`quorum_accept: true`) → `overlap` | 14 / 1 | 0.002 | +4.3 (+2.0, +7.0) | +2.8 (+1.3, +4.3) | more accurate | **met** |
+| `big_sc2` → `overlap` (`quorum_accept: true`) | 4 / 23 | 6×10⁻⁴ | −6.3 (−9.7, −3.0) | −9.0 (−12.0, −6.0) | faster and not significantly less accurate | not met |
+| `overlap` (`quorum_accept: true`) → `repair` | 7 / 23 | 0.005 | −5.3 (−9.0, −2.0) | +25.6 (+20.1, +31.1) | not significantly less accurate | not met |
+
+### What drives accuracy: the acceptance rule
+
+The only difference between `overlap` and its ablation is how it handles a small-model majority that the large model checked and was unsure about (0.2 ≤ P(Yes) < 0.95):
+
+| | accepted on the uncertain majority | escalated to the large model |
+|---|---|---|
+| the 28 questions where this happens | 13 correct, 19 s mean | 27 correct, 57 s mean |
+| the other 272 questions | 255 correct | 254 correct; same answer on 271 |
+
+Escalating instead of accepting recovers almost the whole gap to the large model, for 2.8 s of extra mean latency. The other questions are unaffected, which also shows that the policy is repeatable across sessions.
+
+**Where the remaining errors are.** All 11 questions that `big_sc2` answers correctly and `overlap` does not are *verified accepts*: the large model gave a wrong small-model answer P(Yes) ≥ 0.95. The verifier's confident mistakes, not the scheduling, now limit accuracy.
+
+**`repair`.** The fork step succeeded on 7 of 50 attempts (all 7 correct). The other 43 fell back to a full large-model decode, at 205 s mean. Most of `repair`'s answers come from the small-model quorum (83.5% accurate on 224 questions), which is the weak acceptance path above.
+
+### Verifier framing
+
+How the candidate is presented to the verifier changes its score far more than any threshold does. On the same candidates:
+
+| framing | median P(Yes) | accuracy of verified accepts |
+|---|---|---|
+| the candidate placed in the verifier's own assistant turn ("is your solution correct?") | 0.99 | 42% |
+| the candidate shown as a proposed solution in a grading prompt (used by FreeWidth) | 0.10 | 73% |
+
+- **Direction.** This matches the self-attribution bias reported by Khullar et al. (2026) and the self-correction blind spot reported by Tsui (2025).
+- **Confound.** The two framings also differ in wording, so the effect is not yet attributed to placement alone.
+- **Conflict with prior work.** Khullar et al. found the effect weak when the text came from a different model, which is the case here.
+
+### Hypotheses
+
+| id | hypothesis | status |
+|---|---|---|
+| — | Free width is stable and measurable on a given device | supported (one GPU type, two models) |
+| H9 | The large model is better used as a reader than a writer | refuted for `quorum_accept: true` (−6.3 points) |
+| H10 | Escalating uncertain majorities closes the accuracy gap | supported (−2.0 points, n.s.); same-session confirmation planned |
+| H8 | Read-Locate-Fork replaces large-model writing | refuted |
+| H11–H15 | Free-width atlas across models, formats and GPUs | planned ([Appendix A](#appendix-a)) |
+| H1–H5 | Offline cost-model and strategy hypotheses | planned ([Appendix C](#appendix-c)) |
+
+**Practical guidance (two T4-class GPUs):**
+- Use `overlap` for about half the median latency and 44% less energy, at an accuracy within 2 points of the large model.
+- Use `big_sc2` when worst-case accuracy and p90 latency matter most.
+
+---
+
+## Positioning
+
+A literature review covering about 90 papers (November 2026) found prior work for every component. FreeWidth is an integration and measurement study, not a new algorithm family.
+
+| component | assessment | closest prior work |
+|---|---|---|
+| Free width and the fitted latency model, used to size waves | engineering variant; applying the criterion to independent samples with live sizing is distinct in a narrow sense | He et al. 2026 (same criterion, for decode positions per forward pass); EdgeReasoning and SLIM (fitted latency models); Kinetics |
+| Free-width measurements for hybrid Gated-DeltaNet models on consumer GPUs | no published batch-latency measurements found | He et al.; NeuSight; KernelSight-LM |
+| QuorumStop | engineering variant | DUCHESS; short-m@k; Adaptive-Consistency |
+| `overlap` (two GPUs, streaming one-pass verification, veto, speculative start and cancel) | engineering variant; the concurrent two-GPU schedule was not found published | ATTS; SpecReason; FastTTS; streaming MSV; GenRM |
+| Read-Locate-Fork | not new; a negative result | speculative-decoding verification; decision-token correction; StepBack |
+| Verifier framing effect | known direction; this data point is confounded | Khullar et al. 2026; Tsui 2025 |
+| Pre-registered evaluation with exact paired tests | established methods, uncommon in this area | Miller 2024; van Miltenburg et al. 2021 |
+| Resource-aware test-time scaling overall | distinct as an integration only | ATEST 2026; EdgeReasoning; mobile-NPU TTS |
+
+**Contribution.**
+- **Free width.** FreeWidth applies the near-free-parallelism criterion of He et al. (2026) to the independent self-consistency samples of one question. It fits a per-device latency model and uses that fit at run time to size sampling waves.
+- **New measurements.** It reports width–latency curves for hybrid Gated-DeltaNet models on a consumer GPU.
+- **The `overlap` schedule.** It composes known components (one-pass P(Yes) verification, small-to-large cascades, asynchronous verification, straggler-driven speculation) into a concurrent two-GPU schedule. That schedule is evaluated end to end, with energy measured, under pre-registered criteria.
+
+**Baselines not yet run.**
+
+| component | missing baselines |
+|---|---|
+| QuorumStop | short-m@k at matched width; a fixed-quorum stop (DUCHESS style); an online energy-aware stopper (ATEST style) |
+| `overlap` | a sequential cascade (mixture-of-thought style); a sequential judge (SpecReason style); the same policy on one GPU |
+| Free width | an ε sweep (0.10–0.30); CUDA graphs or `torch.compile` vs eager mode |
+| Verifier framing | placement-only and wording-only ablations |
+
+Related work in detail: [Appendix E](#appendix-e).
+
+---
+
+## Limitations
+
+**Scope**
+- One GPU type (T4), one model family (Qwen3.5) and one dataset with numeric answers (GSM8K).
+- Planned experiments cover MATH-500, a second model pair, a P100 and a dense-model control ([Appendix A](#appendix-a)).
+
+**Serving stack**
+- Timings use transformers' static-batch `generate`, not a paged-attention server (vLLM, SGLang). Free widths and absolute latencies will differ there.
+- In eager mode, a fixed kernel-launch overhead per step probably raises the free width of small models.
+
+**Concurrency**
+- `overlap` and `big_sc2` drive both GPUs from Python threads in one process.
+- On identical questions, `big_sc2` had a higher median latency than the large model on one GPU (40.3 s vs 31.0 s); interpreter-lock contention is the likely cause.
+- A process-per-GPU baseline would make the large model faster than reported here.
+
+**Cross-session comparison**
+- `overlap` and `big_sc2` in the main table come from different Kaggle sessions on identical hardware, questions and seeds.
+- Across sessions, `overlap` gave identical answers on 271 of 272 unaffected questions, but a same-session run is planned before treating the comparison as confirmed.
+
+**Statistics**
+- "Not significantly less accurate" is not equivalence. Detecting a 2-point difference with 80% power would need about 1,000 questions.
+
+**Energy**
+- NVML energy covers the GPUs a policy used. Idle GPUs are not charged, which favours one-GPU policies.
+
+**Cost model**
+- The quadratic attention term assumes every layer uses full attention. In the hybrid models only about a quarter of the layers do; the Gated-DeltaNet layers keep a fixed-size state per sample.
+- The fit is accurate in-sample. Held-out accuracy is tested in the atlas experiment (H15).
+
+**Verifier**
+- All verifier results are specific to the prompt templates in the code.
+
+---
+
+## Reproducing the results
+
+Everything runs on free compute. The per-question rows and generated reports for every run are in [`results/`](results).
 
 ```bash
-python -m freewidth serve --config configs/engine_mock.yaml       # simulated device, no GPU
-FREEWIDTH_API_KEY=$(openssl rand -hex 32) python -m freewidth serve --config configs/engine_t4.yaml
-python -m freewidth calibrate --config configs/engine_t4.yaml     # measure free width
-python -m freewidth bench --config configs/engine_t4.yaml --dataset gsm8k --limit 300 \
-    --policies overlap,big_sc2 --max-hours 5
+# recompute the statistics in Results from the committed rows
+python -m freewidth report results/t4_gsm8k_E1_2026-11-16 results/t4_gsm8k_H10 --out /tmp/stats \
+    --ladder q35-0.8b,q35-4b \
+    --primary "big_sc2:overlap@t4_gsm8k_H10,overlap@t4_gsm8k_E1_2026-11-16:overlap@t4_gsm8k_H10"
+python scripts/make_figures.py                       # Figure 3
 ```
 
-**Security model** (full threat model in [SECURITY.md](SECURITY.md)):
-- **Exposure:** the server binds to loopback by default, and refuses to serve without authentication on any other interface.
+**On Kaggle** (GPU T4 x2, internet on), clone the repository in a notebook cell and run one script per session:
+
+| experiment | script | GPU time |
+|---|---|---|
+| `overlap`, `big_sc2`, `repair` on 300 questions | `bash scripts/kaggle_final.sh` | about 11.8 h |
+| `overlap` alone on 300 questions | `bash scripts/kaggle_h10.sh` | about 3.5 h |
+| free-width sweep (T4) | `bash scripts/kaggle_atlas_t4.sh` | about 2–2.5 h |
+| free-width sweep (P100) | `bash scripts/kaggle_atlas_p100.sh` | about 1 h |
+| any configuration | `CONFIG=... DATASET=... POLICIES=... bash scripts/kaggle_experiment.sh` | varies |
+
+Each script calibrates the device first. It stops starting new questions before Kaggle's session limit, writes every finished question to disk immediately, and builds the statistics report at the end.
+
+---
+
+## Engineering
+
+**Security** (threat model in [SECURITY.md](SECURITY.md)):
+- **Exposure:** the server binds to loopback by default and refuses to serve without authentication on any other interface.
 - **Authentication:** Bearer token, compared in constant time.
-- **Request limits:** body size, message count, prompt length, samples, waves and new tokens are capped, with an optional policy allow-list. The queue is bounded (503) and each request has a deadline (504).
-- **Information exposure:** the only public endpoint is a liveness probe. API docs are disabled, and errors return no internal details.
+- **Request limits:** body size, messages, prompt length, samples, waves and new tokens are capped; there is an optional policy allow-list, a bounded queue (503) and a per-request deadline (504).
+- **Information exposure:** a liveness probe is the only public endpoint; API docs are disabled; errors carry no internal details.
 - **Model loading:** `trust_remote_code` is off, with optional pinning to a Hub revision.
-- **Remote backends:** they refuse to send credentials over plain HTTP.
-- **Container:** non-root Docker image.
+- **Remote backends:** never send credentials over plain HTTP.
+- **Container:** the Docker image runs as a non-root user.
 
-**Testing and CI.**
-- 111 tests run on a simulated device: controller logic, policies, statistics, server security and limits, and configs. The real `transformers` path is tested on a tiny model on CPU.
-- CI runs on Python 3.10–3.12 with SHA-pinned Actions and read-only permissions.
-- A security workflow runs bandit, pip-audit, detect-secrets and CodeQL on every push and weekly. Dependabot is enabled.
-
-## 10. Related work
-
-**Near-free parallelism and latency models.**
-- **He et al. (2026)** define near-free parallelism: the largest N with T(N) ≤ (1+ε)·T(1), with ε = 0.2, where N counts decode positions per forward pass (speculative decoding, multi-token prediction, diffusion LLMs), on A800, H800 and H20 GPUs with vLLM and SGLang.
-  - They explain the boundary by idle compute for dense FFNs, and by kernel tile granularity for MoE layers and attention.
-  - A roofline estimate over-predicts the boundary by 2.4× to 23×.
-  - FreeWidth uses the same criterion for independent samples.
-- **Fitted latency models.**
-  - EdgeReasoning (Jetson Orin) fits a decode-latency model of the same form as ours at width 1, and uses it to choose token budgets.
-  - SLIM fits a per-GPU model in batch size and sequence lengths, to choose serving batch sizes.
-  - Kinetics chooses the number of samples for best-of-N from an analytic cost that assumes large serving batches.
-- **Latency predictors**, relevant to the atlas: NeuSight, KernelSight-LM, GenZ, LLMCompass, Vidur and LLM-Viewer predict latency on unseen GPUs or kernels. None of them targets the near-free boundary itself.
-- **Batch saturation:** *Mind the Memory Gap* studies the saturation ("knee") batch size in large-batch serving.
-- **Hybrid and state-space models:**
-  - M1 sweeps batch sizes for a Mamba hybrid on an H100.
-  - Mitra et al. measure state-space and hybrid models on an RTX 4090 and a Jetson at batch size 1.
-  - No batch-latency sweep for a Gated-DeltaNet hybrid was found.
-
-**Resource-aware test-time scaling.**
-- **ATEST (2026), the closest competitor:** stops sampling online using live GPU load and measured energy, on an A100 and an L40S.
-- **Measured costs on constrained hardware, used to characterise trade-offs:**
-  - EdgeReasoning;
-  - mobile-NPU TTS (EuroSys 2026);
-  - *Sample Count Is Not Enough*: batched candidate generation uses 4.6–4.9× less energy than serial calls;
-  - *The Energy Cost of Reasoning*.
-- **Latency-oriented methods:**
-  - FastTTS (ASPLOS 2026) speculates on idle GPU time while waiting on straggler beams, on consumer GPUs.
-  - Latency-aware TTS (Findings of EMNLP 2025) shows that latency-optimal and compute-optimal scaling differ.
-  - *Efficient Reasoning on the Edge* covers related techniques on Qualcomm hardware.
-- **Compute-optimal scaling under FLOPs:** Snell et al., Wu et al., Large Language Monkeys, and *When To Solve, When To Verify*.
-
-**Early stopping and in-batch truncation.**
-- **Sequential adaptive stopping:**
-  - Adaptive-Consistency, ReASC and CGES use a Beta or Bayesian posterior.
-  - ESC stops when a window of samples agrees.
-  - ConSol uses a sequential probability ratio test, and shows that repeated checking inflates the error rate of Adaptive-Consistency's rule.
-  - CASE, RASC, DeepConf and Certaindex also stop early.
-- **Concurrent samples that stop the batch and cancel the rest:**
-  - short-m@k (stop at the first *m* finished);
-  - First Finish Search (*m* = 1);
-  - SART;
-  - **DUCHESS** (a fixed agreement quorum, the closest to QuorumStop);
-  - Parallel-Probe and MARS (which force partial answers from unfinished samples);
-  - Funnel of Thoughts.
-- **Truncation by quality signals:** ST-BoN, Speculative Rejection and Slim-SC.
-
-**Verification and cascades.**
-- **Single-pass P(Yes) verification** is the GenRM formulation.
-- **Large-model prefill judging of small-model output** is used by SpecReason (which names overlapping the two models as future work) and SpecAgent.
-- **Asynchronous and streaming verification:** ATTS (asynchronous draft sampling and target verification), and streaming multi-sequence verifiers (MSV), which stop as soon as one candidate passes.
-- **Cascades:** FrugalGPT, speculative cascades, C3PO, AutoMix, and mixture-of-thought consistency cascades, which escalate from a weak model to a strong one on low agreement among the weak model's samples. The last is the closest to `overlap`'s disagreement trigger.
-- **Comparison with `overlap`:** no published system was found that runs per-candidate verification on a second GPU concurrently with the small model's sampling, with veto and speculative start and cancel of the large model.
-
-**Error localisation and repair.**
-- Speculative-decoding verification (find the first rejected token; the target writes it; the draft continues) is the structural template for Read-Locate-Fork.
-- Decision-token correction (Shen et al. 2026), StepBack, SpecAgent, R2R and MentorCollab localise and repair errors at the token or step level.
-
-**Verifier bias.**
-- Khullar et al. (2026) define self-attribution bias in monitors, and find it weak for content written by another model.
-- Tsui (2025) documents the self-correction blind spot.
-- Self-preference in LLM judges is studied by Panickssery et al. (2024).
-
-**Statistical practice.**
-- Miller (2024) recommends standard errors, paired analysis and power analysis for LLM evaluations.
-- Hochlehnert et al. (2025) show seed variance of 5–15 points on reasoning benchmarks.
-- van Miltenburg et al. (2021) propose pre-registration for NLP research.
-
-## 11. References
-
-- Aggarwal et al. *Let's Sample Step by Step: Adaptive-Consistency for Efficient Reasoning.* EMNLP 2023.
-- Agrawal et al. *Vidur: A Large-Scale Simulation Framework for LLM Inference.* MLSys 2024. arXiv:2405.05465.
-- Bondarenko et al. *Efficient Reasoning on the Edge.* arXiv:2603.16867.
-- *FastTTS: Accelerating Test-Time Scaling for Edge LLM Reasoning.* ASPLOS 2026. arXiv:2509.00195.
-- He, Zhang, Liu, Zhou, Liu. *How Much Parallelism Is "Free"? A Principle of Near-Free Parallelism for Parallel Decoding.* arXiv:2605.30851.
-- Hao et al. *Scaling LLM Test-Time Compute with Mobile NPU on Smartphones.* EuroSys 2026. arXiv:2509.23324.
-- Kashaniyan, Jannesari. *ATEST: Adaptive Resource-Aware Test-Time Scaling for LLM Inference.* arXiv:2610.25519.
-- Kubwimana, Huang. *EdgeReasoning: Characterizing Reasoning LLM Deployment on Edge GPUs.* arXiv:2511.01866.
-- *KernelSight-LM: A Kernel-Level LLM Inference Simulator.* arXiv:2606.28565.
-- *Mind the Memory Gap: Unveiling GPU Bottlenecks in Large-Batch LLM Inference.* arXiv:2503.08311.
-- *Sample Count Is Not Enough: Candidate-Generation Strategy Shapes the Energy and Performance of LLM Test-Time Scaling.* arXiv:2609.19499.
-- *SLIM: Saturation-Aware Lightweight Performance Modeling for LLM Serving.* arXiv:2607.29575.
-- Sun et al. *Fast Best-of-N Decoding via Speculative Rejection.* NeurIPS 2024. arXiv:2410.20290.
-- Xiong et al. *ATTS: Asynchronous Test-Time Scaling via Conformal Prediction.* ICLR 2026. arXiv:2509.15148.
-- Chen, Zaharia, Zou. *FrugalGPT.* 2023.
-- Fu, Wang, Zhang, Tian, Zhao. *Deep Think with Confidence.* ICLR 2026. arXiv:2508.15260.
-- Hassid, Synnaeve, Adi, Schwartz. *Don't Overthink It: Preferring Shorter Thinking Chains.* arXiv:2505.17813.
-- *Faster and Better LLMs via Latency-Aware Test-Time Scaling.* Findings of EMNLP 2025.
-- Narasimhan et al. *Faster Cascades via Speculative Decoding.* ICLR 2025.
-- Sadhukhan et al. *Kinetics: Rethinking Test-Time Scaling Laws.* NeurIPS 2025. arXiv:2506.05333.
-- Shen et al. *Reasoning Can Be Restored by Correcting a Few Decision Tokens.* arXiv:2605.16874.
-- Singhi et al. *When To Solve, When To Verify.* COLM 2025. arXiv:2504.01005.
-- Snell, Lee, Xu, Kumar. *Scaling LLM Test-Time Compute Optimally Can Be More Effective than Scaling Model Parameters.* ICLR 2025. arXiv:2408.03314.
-- *StepBack: Step-Level Error-Localized Resampling for Efficient Test-Time Reasoning.* arXiv:2611.08403.
-- *Trajectory-Level Speculation with Semantic Verification for Tool-Using Agents* (SpecAgent). arXiv:2610.21463.
-- Tsui. *Self-Correction Bench: Uncovering and Addressing the Self-Correction Blind Spot in Large Language Models.* arXiv:2507.02778.
-- Wang et al. *Self-Consistency Improves Chain of Thought Reasoning.* ICLR 2023.
-- Wu et al. *Inference Scaling Laws.* arXiv:2408.00724.
-- Agarwal, Sengupta, Chakraborty. *First Finish Search.* arXiv:2505.18149.
-- Aghazadeh et al. *Confidence-Guided Early Stopping for Efficient and Accurate Self-Consistency* (CGES). arXiv:2511.02603.
-- Brown et al. *Large Language Monkeys.* arXiv:2407.21787.
-- Chen et al. *MARS: Margin-Adversarial Risk-controlled Stopping for Parallel LLM Test-time Scaling.* arXiv:2606.12935.
-- Hochlehnert et al. *A Sober Look at Progress in Language Model Reasoning: Pitfalls and Paths to Reproducibility.* COLM 2025. arXiv:2504.07086.
-- Hong et al. *Slim-SC: Thought Pruning for Efficient Scaling with Self-Consistency.* arXiv:2509.13990.
-- Jiang, Shahout, Du, Mitzenmacher, Yu. *Intra-Request Branch Orchestration for Efficient LLM Reasoning* (DUCHESS). arXiv:2509.24957.
-- Jin, Wei, Brooks. *The Energy Cost of Reasoning: Analyzing Energy Usage in LLMs with Test-time Compute.* arXiv:2505.14733.
-- Khullar, Hopkins, Wang, Roger. *Self-Attribution Bias: When AI Monitors Go Easy on Themselves.* arXiv:2603.04582.
-- Kim, Yang, Min, Jung. *Reliability-Aware Adaptive Self-Consistency* (ReASC). arXiv:2601.02970.
-- Lee et al. ConSol (sequential probability ratio test over the top-two answers). arXiv:2503.17587.
-- Lee, Phanishayee, Mahajan. *Forecasting GPU Performance for Deep Learning Training and Inference* (NeuSight). ASPLOS 2025. arXiv:2407.13853.
-- Li et al. *Escape Sky-high Cost: Early-stopping Self-Consistency for Multi-step Reasoning* (ESC). ICLR 2024. arXiv:2401.10480.
-- Miller. *Adding Error Bars to Evals: A Statistical Approach to Language Model Evaluations.* arXiv:2411.00640.
-- Mitra et al. *Characterizing State Space Model and Hybrid Language Model Performance with Long Context.* ISPASS 2026. arXiv:2507.12442.
-- Panickssery, Bowman, Feng. *LLM Evaluators Recognize and Favor Their Own Generations.* arXiv:2404.13076.
-- Park et al. *Funnel of Thoughts.* arXiv:2608.15065.
-- *SpecReason: Fast and Accurate Inference-Time Compute via Speculative Reasoning.* NeurIPS 2025. arXiv:2504.07891.
-- *Parallel Test-Time Scaling with Multi-Sequence Verifiers* (MSV). arXiv:2603.03417.
-- Ouyang, Kim. *StepBack.* NeurIPS 2026. arXiv:2611.08403.
-- van Miltenburg, van der Lee, Krahmer. *Preregistering NLP Research.* NAACL 2021. arXiv:2103.06944.
-- Wang et al. *M1: Towards Scalable Test-Time Compute with Mamba Reasoning Models.* arXiv:2504.10449.
-- Wang, Jiang, Cui, Fu. *Thinking Short and Right Over Thinking Long: Serving LLM Reasoning Efficiently and Accurately* (SART). arXiv:2505.13326.
-- Wang et al. *Sampling-Efficient Test-Time Scaling: Self-Estimating the Best-of-N Sampling in Early Decoding* (ST-BoN). NeurIPS 2025. arXiv:2503.01422.
-- Wang, Wang, Feng, Hajishirzi, Tsvetkov. *MentorCollab.* arXiv:2602.05307.
-- Yue et al. *Large Language Model Cascades with Mixture of Thought Representations for Cost-Efficient Reasoning.* ICLR 2024. arXiv:2310.03094.
-- Zhang et al. *Generative Verifiers: Reward Modeling as Next-Token Prediction* (GenRM). ICLR 2025. arXiv:2408.15240.
-- Zheng et al. *Parallel-Probe.* arXiv:2602.03845.
-- Fu et al. *Roads to Rome* (R2R). NeurIPS 2025.
-
-The full bibliography of the offline pipeline is in [Appendix C](#appendix-c).
+**Testing and CI:**
+- **Simulated device:** about 110 tests cover controller logic, policies, statistics, server security and limits, configs, and end-to-end runs of the Kaggle scripts with GPU tools stubbed.
+- **Real model path:** the `transformers` backend is tested on a tiny model on CPU.
+- **CI:** runs on Python 3.10–3.12 with SHA-pinned Actions and read-only permissions.
+- **Security scanning:** bandit, pip-audit, detect-secrets and CodeQL run on every push and weekly. Dependabot is enabled.
 
 ---
 
@@ -624,89 +346,45 @@ The full bibliography of the offline pipeline is in [Appendix C](#appendix-c).
 
 <a id="appendix-a"></a>
 
-### Appendix A. Pre-registered experiments
+### Appendix A. Experiment protocol
 
 <details>
 <summary>Show</summary>
 
-Each experiment's primary comparisons, sample size and pass/fail criteria are written here **before** it runs. This file is version-controlled, so the commit history shows that the plan came first.
+For every experiment, the primary comparisons, the sample size and the pass/fail criteria are committed to this file before it runs, so the commit history shows that the plan came first.
 
 **Rules**
-- **Primary comparisons are the only basis for a claim.** Holm correction is applied within the primary family (`freewidth report --primary ...`).
+- **Claims rest only on primary comparisons.** Holm correction is applied within the primary family (`freewidth report --primary ...`).
 - **Everything else is exploratory.** It is corrected as its own family and reported as a lead, not a finding.
-- **A failed criterion is reported as a failure.** It is not reworded or moved to a different subset.
-- **Sample sizes come from the power estimates** in `freewidth report` (80% power, α = 0.05, exact McNemar) using the previous run's discordant rates.
-- **All runs are free:** Kaggle T4 x2 or P100, open-weight models.
+- **A failed criterion is reported as a failure.**
+- **Sample sizes come from McNemar power estimates** (80% power, α = 0.05) using observed discordance rates.
+- **All runs use free compute** (Kaggle T4 x2 or P100) and open-weight models.
 
-#### Status
+#### Experiments
 
-| id | question | setting | status |
-|---|---|---|---|
-| E0 | first live results | T4 x2, GSM8K, 100 q | done (runs 1–2): `docs/results-t4-gsm8k*.md` |
-| E1 | does overlap still win against a fair two-GPU big-model baseline; does repair work once its verifier is fixed | T4 x2, GSM8K, 300 q | **done**: E1.1 failed (overlap is 6.3 points less accurate, faster); E1.2 failed (repair worse than overlap). See `docs/results-t4-gsm8k-E1.md` |
-| E1b | H10: overlap with uncertain majorities escalated (`quorum_accept: false`) | T4 x2, GSM8K, 300 q | **done**: both criteria met (§5.6); 186 min |
-| E1c | process-per-GPU big_sc2 with a same-session one-GPU control | T4 x2, GSM8K, 300 q | planned (after the weekly GPU quota resets) |
-| E2 | does it hold on harder problems | T4 x2, MATH-500, 200 q | planned |
-| E3 | does it hold for another model pair | T4 x2, Qwen3.5-2B → 4B, GSM8K, 300 q | planned |
-| E4 | does the strategy ranking change with the hardware | P100 (one GPU), GSM8K, 300 q | planned |
-| E5 | do hybrid (linear-attention) models change the small-vs-big trade-off (H2) | T4 x2, dense Qwen3 0.6B → 4B, GSM8K, 300 q | planned |
-| E6 | free-width atlas: do the near-free-parallelism principles hold on the sample axis for hybrid models on consumer GPUs (H11–H15) | T4 x2 and P100, 10 + 3 settings, calibration only | **ready**: `scripts/kaggle_atlas_t4.sh`, `scripts/kaggle_atlas_p100.sh` |
+| id | question | setting | status | data |
+|---|---|---|---|---|
+| E1 | `overlap` (`quorum_accept: true`) and `repair` vs the large model on both GPUs | T4 x2, GSM8K, 300 q | completed | `results/t4_gsm8k_E1_2026-11-16/` |
+| E1b | `overlap` (escalating uncertain majorities, H10) vs the same baselines | T4 x2, GSM8K, 300 q | completed | `results/t4_gsm8k_H10/` |
+| E1c | `overlap` and `big_sc2` in the same session, with `big_sc` on one GPU as a control | T4 x2, GSM8K, 300 q | planned | — |
+| E2 | does the result hold on harder problems | T4 x2, MATH-500, 200 q | planned | — |
+| E3 | does it hold for another model pair | T4 x2, Qwen3.5-2B → 4B, GSM8K, 300 q | planned | — |
+| E4 | does the strategy ranking change with the hardware | P100, GSM8K, 300 q | planned | — |
+| E5 | does a dense model family change the trade-off | T4 x2, Qwen3 0.6B → 4B, GSM8K, 300 q | planned | — |
+| E6 | free-width atlas across models, formats and GPUs (H11–H15) | T4 x2 and P100, 10 + 3 settings, calibration only | planned | — |
 
-#### E1: fair baseline and the repair retest
+Raw rows from two earlier 100-question runs are also kept in `results/`.
 
-**Run.** `bash scripts/kaggle_final.sh`. Policies `overlap,big_sc2,repair` on GSM8K test, 300 questions (sampler seed 0; a superset of the 100 used before), Qwen3.5-0.8B on GPU 0 and Qwen3.5-4B on GPU 1. `big_sc2` runs the 4B on both GPUs: 8 samples split 4 + 4 (the 4B's free width), with a shared QuorumStop.
+#### E1c: same-session confirmation
 
-**Why 300.** From run 2's discordant rates:
-- overlap vs the 4B alone needs about 280 questions;
-- overlap vs freewidth needs about 145.
-
-**Primary comparisons (Holm over these two)**
-1. **overlap vs big_sc2**
-   - *Claim if:* overlap's mean seconds are lower with a 95% interval below 0, and its accuracy is not significantly lower (Holm p ≥ 0.05, or overlap higher).
-   - *Fail if:* big_sc2 is as fast or faster (interval includes 0 or favours big_sc2). Then the headline becomes "on two GPUs, run the big model on both", and overlap's speed claim is withdrawn.
-2. **repair vs overlap**
-   - *Claim if:* repair is not significantly less accurate than overlap (Holm p ≥ 0.05, or repair higher) **and** the largest model decodes on fewer questions.
-   - *Fail if:* repair is significantly less accurate. Then H8 is refuted in this setting.
-
-**Secondary, exploratory**
-- **H8 as originally stated**, repair vs `freewidth`: on the 100 questions shared with run 2. These are cross-session, so the result is exploratory.
-- **Overlap repeatability:** overlap run 2 vs overlap E1, on the shared 100 questions.
-- **Verifier calibration under the 0.4.1 framing:** the distribution of repair's P(Yes) on correct vs incorrect candidates.
-- **How often big_sc2's shared QuorumStop fires**, and its effect on latency.
-
-#### E1b: escalate majorities the 4B is unsure about (H10)
-
-**Motivation (from E1, written before E1b runs).**
-- Overlap accepted 28 of 300 questions on the 0.8B's majority after the 4B had checked the answer and was unsure (0.2 ≤ P(Yes) < 0.95; `accept_reason = quorum`).
-- It was right on 13 of them; `big_sc2` was right on 26.
-- On every other question, overlap was 93.8% accurate (255/272).
-
-**H10.** With `quorum_accept: false`, overlap does not accept such a majority. It starts the 4B on the question at that moment (trigger `uncertain_quorum`). Confidently verified answers (P(Yes) ≥ 0.95 with two or more votes) are still accepted. Everything else is unchanged from E1.
-
-**Run.** `bash scripts/kaggle_h10.sh`: `configs/engine_t4_h10.yaml`, policy `overlap`, the same 300 questions and seeds as E1, one Kaggle commit with the session capped at 5 h.
-
-**Primary comparisons**, against E1's rows on the same questions (Holm over the two):
-
-1. **overlap(H10) vs big_sc2(E1).**
-   - *Claim if:* accuracy is not significantly lower (Holm p ≥ 0.05, or H10 is higher) **and** mean seconds are lower (95% interval below 0).
-   - *Fail if:* either condition fails.
-2. **overlap(H10) vs overlap(E1).**
-   - *Claim if:* accuracy is higher with Holm p < 0.05.
-   - The expected mean-time cost is +3 to +6 s. This is reported, not tested.
-
-**Caveat, stated in advance.** These comparisons are cross-session: same hardware type, code and questions, but a different Kaggle session. E1 showed overlap is repeatable across sessions: 86 vs 88 correct on 100 shared questions, the same answer on 85.
-- If (1) passes, E1c reruns `big_sc2` (process-per-GPU) in the same session before the claim goes in the README headline.
-- If (1) fails, the trade-off stands as reported.
-
-**Analysis command, fixed before the run.** The H10 rows are committed to `results/t4_gsm8k_H10/`. The report names a policy that appears in both runs after its folder, so the two overlap runs are `overlap@t4_gsm8k_H10` and `overlap@t4_gsm8k_E1_2026-11-16`; `big_sc2` appears only in E1 and keeps its name:
-
+**Run.**
 ```bash
-python -m freewidth report results/t4_gsm8k_E1_2026-11-16 results/t4_gsm8k_H10 \
-    --out results/t4_gsm8k_H10/vs_E1 --ladder q35-0.8b,q35-4b \
-    --primary "big_sc2:overlap@t4_gsm8k_H10,overlap@t4_gsm8k_E1_2026-11-16:overlap@t4_gsm8k_H10"
+CONFIG=configs/engine_t4.yaml POLICIES=overlap,big_sc2,big_sc \
+  PRIMARY=big_sc2:overlap bash scripts/kaggle_experiment.sh
 ```
-
-**Known inefficiency, left unchanged on purpose.** After an uncertain-majority escalation, the 0.8B wave keeps decoding until its rows finish or are cut, although with verification stopped it can no longer produce an accept. That costs the small GPU's time, and possibly some Python-thread contention with the 4B. Stopping the wave early would also change latency, so it is not part of H10. The change tested is only the acceptance rule.
+- **Primary:** `overlap` vs `big_sc2`, with the same criteria as E1b.
+- **Exploratory:** `big_sc2` vs `big_sc`, which measures the cost of driving two GPUs from one process.
+- **Time:** about 9–10 GPU hours. If the session limit is reached first, `big_sc` is the one left incomplete.
 
 #### E2: MATH-500
 
@@ -717,11 +395,11 @@ CONFIG=configs/engine_t4_math.yaml DATASET=math500 LIMIT=200 \
 ```
 Answers are graded with math-verify. `max_new_tokens` is 2048, with its own calibration, because free width depends on the generation length.
 
-**Primary.** overlap vs big_sc2, with the same criteria as E1.1.
+**Primary.** `overlap` vs `big_sc2`: `overlap` is faster (95% interval of the mean-time difference below 0) and not significantly less accurate (Holm p ≥ 0.05).
 
 **Secondary.** Results by MATH level (1–5). We expect the gap to grow with difficulty, but this is exploratory.
 
-**Size.** 200 questions keeps the run under 12 h. If E1 shows an accuracy gap smaller than 5 points, E2 is reported as a latency comparison with an accuracy confidence interval, not an accuracy claim.
+**Size.** 200 questions keeps the run under 12 h. With an expected accuracy gap below 5 points, E2 is reported as a latency comparison with an accuracy confidence interval, not an accuracy claim.
 
 #### E3: second model pair
 
@@ -730,7 +408,7 @@ Answers are graded with math-verify. `max_new_tokens` is 2048, with its own cali
 CONFIG=configs/engine_t4_2b.yaml POLICIES=overlap,big_sc2,freewidth \
   PRIMARY=overlap:big_sc2,overlap:freewidth bash scripts/kaggle_experiment.sh
 ```
-**Primary.** As in E1.1, plus overlap vs freewidth (overlap more accurate, Holm p < 0.05).
+**Primary.** As in E2, plus `overlap` vs `freewidth` (`overlap` more accurate, Holm p < 0.05).
 
 **Note.** The 2B and the replica 4B on GPU 0 need about 14 GB. If the replica does not fit, `big_sc2` runs on one GPU and the run notes say so. In that case the fair-baseline comparison is **not** claimed for this pair.
 
@@ -745,7 +423,7 @@ CONFIG=configs/engine_p100.yaml POLICIES=freewidth,big_sc,sc \
 - The measured free widths differ from the T4's.
 - The ordering of `freewidth` vs `big_sc` by mean seconds at matched accuracy differs from the T4 ordering.
 
-*Fail if* the free widths and the ordering both match the T4. In that case the paper does not claim that the ranking depends on hardware.
+*Fail if* the free widths and the ordering both match the T4. In that case the ranking is not claimed to depend on hardware.
 
 **Risk.** Qwen3.5's linear-attention kernels may not run on the P100's sm_60 architecture. If calibration falls back to the slow path, switch to the dense pair as described in the config header, and report it.
 
@@ -806,15 +484,14 @@ H14 is read from the measurement table.
 
 | id | approx. GPU hours |
 |---|---|
-| E1 | 8 |
-| E1b (H10) | 3.5–4 |
+| E1c | 9–10 |
 | E2 | 8–10 |
 | E3 | 8 |
 | E4 | 6 |
 | E5 | 8 |
 | E6 | 2.5 (T4) + 1 (P100) |
 
-Kaggle gives about 30 GPU hours a week, so the plan takes about two weeks of free quota.
+Kaggle's free tier gives about 30 GPU hours a week.
 
 </details>
 
@@ -850,9 +527,9 @@ big model: ONE forward pass over the top candidates, P(Yes | "is this correct?")
 big model decodes its own waves (same QuorumStop) ──► answer
 ```
 
-##### Policy `overlap` (two-device ladder, proposed in 0.3.0)
+##### Policy `overlap` (two-device ladder)
 
-`freewidth` is a sequential cascade: the big model only works after the small model has given up. In the T4 run, that left GPU 1 idle 90% of the time, and escalated questions spent about 99 s on the small model before escalating. `overlap` puts the idle GPU to work while the small model is still decoding:
+`freewidth` is a sequential cascade: the big model only works after the small model has given up. `overlap` puts the second GPU to work while the small model is still decoding:
 
 ```
 GPU 0 (small)  ── wave of free width ─────────────┬── answer (big model run cancelled)
@@ -862,18 +539,19 @@ GPU 1 (big)      ├─► prefill P(Yes) per row ───────┘  stre
 ```
 
 - **Streaming verification.** Each finished small-model row is scored by the big model at once, overlapping with the remaining decode.
-- **Veto.** A confident small-model majority is not accepted if the big model scores all of its chains below `veto_lo`. That targets confident-but-wrong answers: 17 of the 82 quorum answers in the T4 run were wrong.
-- **Verified accept.** An answer with at least 2 votes and a big-model score ≥ `accept_hi` (0.95) is accepted even without a quorum. In the T4 run, the wrong answers the verifier accepted all scored between 0.78 and 0.91.
+- **Veto.** A small-model majority is not accepted if the big model scores all of its chains below `veto_lo` (0.2). This targets confident-but-wrong majorities.
+- **Verified accept.** An answer with at least 2 votes and a big-model score ≥ `accept_hi` (0.95) is accepted.
+- **Uncertain majority.** A majority the big model has checked but is unsure about (`veto_lo` ≤ P(Yes) < `accept_hi`) is escalated, not accepted. `quorum_accept: true` accepts it instead; that setting is 4.3 points less accurate (see [Results](#results)).
 - **Speculative escalation.** The big model starts decoding as soon as the wave signals failure: the finished rows disagree (`trigger_lead_prob`), the lead answer is vetoed, or stragglers outlive the finished rows by `runaway_factor`. If the small model then accepts, the big model's run is cancelled.
 - **Straggler cut.** Rows still running beyond `runaway_factor` × the median finished length stop and do not vote.
 
 It needs two ladder models, ideally on different GPUs (the default T4 config). On a single GPU it still runs, but the two models compete for the device. `wall_seconds` reports the overlapped end-to-end time, and `notes` records the trigger, the accept reason, verified rows and cut rows.
 
-##### Policy `repair` (Read-Locate-Fork, proposed in 0.4.0)
+##### Policy `repair` (Read-Locate-Fork, experimental)
 
 The big model reads once and writes at most one token:
 
-1. **Read.** The small model's candidate is shown to the big model as a third-party proposed solution in a grading prompt ("Is the final answer of the proposed solution correct?"). One forward pass gives the verdict, P(Yes), and the big model's next-token distribution at every solution token. (In 0.4.0 the candidate was framed as the big model's own answer, which made the verdict almost always Yes; see Section 5.4.)
+1. **Read.** The small model's candidate is shown to the big model as a third-party proposed solution in a grading prompt ("Is the final answer of the proposed solution correct?"). One forward pass gives the verdict, P(Yes), and the big model's next-token distribution at every solution token.
 2. **Locate.** The flaw is the first solution token (after a short warm-up) that the big model rates below `flaw_p` (0.05) while preferring another token with at least `flaw_conf` (0.5).
 3. **Fork.** The big model's token replaces the small model's at the flaw. The small model continues from there in a full free-width batch with QuorumStop, and the samples vote.
 4. **Accept or escalate.** A verified candidate (P(Yes) ≥ `accept_hi`) is accepted without repair. A repaired answer is accepted if its batch reaches a quorum and the big model does not veto it. Otherwise the big model decodes as a last resort.
@@ -885,7 +563,7 @@ It needs both models to share a tokenizer (one model family); otherwise it falls
 - **Shen et al. 2026:** a few decision tokens carry the gap between a base model and a reasoning model.
 - **SpecAgent (2026):** the strong model prefill-verifies a weak draft and repairs the first rejected step itself.
 
-What's new here: the verdict and the location come from the **same pass**, the strong model writes **one token**, and the repair is a **parallel free-width batch** of the weak model.
+Here the verdict and the location come from the same pass, the strong model writes one token, and the repair is a parallel free-width batch of the weak model. In evaluation it was less accurate and slower than `overlap` (see [Results](#results)), so it is not recommended.
 
 ##### Baselines `big_sc` and `big_sc2`
 
@@ -1011,44 +689,19 @@ Other endpoints:
 
 <a id="appendix-c"></a>
 
-### Appendix C. Offline research pipeline: literature gaps, hypotheses H1–H5, cost models, strategies, bibliography
+### Appendix C. Offline research pipeline
 
 <details>
 <summary>Show</summary>
 
-#### Coverage map: gaps found, and how this repo addresses them
-
-| # | Gap in the literature (as of November 2026) | Closest prior work | What FreeWidth does |
-|---|---|---|---|
-| G1 | Frontiers are computed under one cost model. Latency-aware work shows compute-optimal is not latency-optimal on datacenter GPUs, but no measured per-device "free width" on single-user consumer hardware | Snell et al. 2024; Kinetics 2025; UniScale 2026; Latency-Aware Test-Time Scaling (EMNLP Findings 2025) | Prices identical traces under FLOPs, multi-tenant eFLOPs and a cost curve measured on the device. Reports Kendall tau, Pareto overlap, and a new **iso-accuracy overrun** metric (how much slower you run if you trust the wrong frontier) |
-| G2 | Kinetics' conclusion that small models are over-estimated assumes full attention in every layer | Kinetics (dense Qwen3 models) | Runs hybrid Qwen3.5 (Gated DeltaNet) against a dense Qwen3 control on the same device; `compare` reports the KV-penalty ratio (H2) |
-| G3 | Parallel early-stop methods use a fixed *m* (short-m@k) or per-trace confidence (DeepConf), priced in tokens | Hassid et al. 2025; Fu et al. ICLR 2026; Aggarwal et al. 2023 | **QuorumStop:** a posterior-adaptive stop over the order in which rows finish inside a lock-step wave, priced on static-batch hardware, where the slowest row sets the cost (H3) |
-| G4 | Verification is priced as decoding (GenRM verification chains), so self-consistency wins under FLOPs | Singhi et al. COLM 2025; GenRM; SplitReason 2025 (uses prefill to decide hand-offs, not to verify answers) | **Prefill-Verified Escalation:** the big model never decodes; it scores the small model's distinct candidates in one forward pass. Tests whether "self-consistency beats verification" reverses under device cost (H4) |
-| G5 | "Think longer" (thinking-mode budgets) and "think wider" are rarely compared on one measured-cost frontier | s1 budget forcing (Muennighoff et al. 2025); short-m@k | Thinking-budget variants (budget forcing) are banked as extra model tags and replayed on the same frontier (H5) |
-| G6 | Answer-level cascades run sequentially, so on a multi-GPU single-user box the big model's device sits idle while the small model decodes, and escalated questions pay the small model's full time first | Speculative cascades (token level, Narasimhan et al. 2025); ConfSpec (step level, ACL 2026); MSV streaming verifier (single verifier, selection only, 2026); MARS mid-generation stopping (one model, simulated, 2026); Signed Rescue Routing (sequential, learned router, 2026) | **Overlap** (engine policy `overlap`): streaming cross-model verification with veto, verified accept, and speculative escalation triggered by the wave's own dynamics (disagreement, vetoed lead, stragglers), on separate GPUs. Measured live, not simulated |
-| G7 | When a small model fails, either the big model writes a whole new answer (cascades) or someone locates the error with the same model or a separate scorer (StepBack) | StepBack (2026); Shen et al. *Reasoning Can Be Restored by Correcting a Few Decision Tokens* (2026); SpecAgent (2026) | **Read-Locate-Fork** (engine policy `repair`): one big-model forward pass gives both the verdict and the first flawed token; the big model writes one token; the small model repairs in a parallel free-width batch |
-
-The literature check behind this table found **short-m@k** and **DeepConf** already published, so both are included as **baselines**, not claimed as new. Check arXiv again before calling anything a first. Searches cannot prove that something was never tried; they can only show that it was not found.
-
-**Not covered (deliberately):** PRM-guided beam or tree search, multi-agent debate, and RL-trained adaptive-length models. All three need online generation with branching, which offline bank replay cannot reproduce. They are listed as future work.
-
 #### Hypotheses (each one can be falsified)
 
-The status of each hypothesis is in [Section 5.7](#57-hypothesis-status).
+Hypotheses H1–H5 are tested by the offline pipeline; none has been run yet.
 
 - **H1, regime flip.** Kendall tau(FLOPs, device seconds) is well below 1, the Pareto frontiers overlap little (Jaccard < 0.5), and the worst iso-accuracy overrun (FLOPs to device) is above 2×. *Refuted if* the frontiers match.
 - **H2, hybrids weaken Kinetics.** The KV-penalty ratio (small model sampling wide vs. big model answering once, under eFLOPs) is lower for hybrid Qwen3.5 than for dense Qwen3 at similar sizes.
 - **H3, QuorumStop.** At matched accuracy, `hwave(quorum=True)` costs fewer device seconds than both `short_mk` and full-wave voting, because wrong chains tend to be the long stragglers.
 - **H4, prefill verification.** Under device seconds, `pverify` beats both self-consistency on the small model and decoding with the big model at matched accuracy. This reverses Singhi et al.'s FLOPs-based conclusion for a single-tenant device.
-- **Status after E1:**
-  - H6 and H7 supported (run 2).
-  - H8 refuted: repair is less accurate and slower than overlap, and no better than freewidth.
-  - H9 refuted: the 4B alone is 6.3 points more accurate than overlap (Holm p = 0.0006). Overlap keeps a latency and energy advantage.
-  - H10 (escalate majorities the 4B is unsure about) is pre-registered for E1b.
-- **H6, overlap cuts escalation latency.** On escalated questions, `overlap` has lower median wall time than `freewidth`, because the big model starts during the first wave instead of after two failed waves. *Refuted if* escalated-question latency does not drop.
-- **H7, the veto rescues confident-wrong answers.** `overlap` is more accurate than `freewidth` on questions the small model answers with a quorum, at mean time within 15% of `freewidth`. *Refuted if* the accuracy gain is zero or the time cost is larger.
-- **H8, read-locate-fork replaces writing.** On questions where the small model is unsure, `repair` reaches at least the accuracy of `freewidth` (which escalates to big-model decoding) with lower mean latency, and the big model writes a full answer on fewer than half as many questions. *Refuted if* repaired batches are no more accurate than fresh small-model batches.
-- **H9, the big model is better as a reader than a writer.** `freewidth`, `overlap` or `repair` beats `big_sc` (the 4B model alone) on accuracy per second **and** accuracy per joule on the T4. *Refuted if* `big_sc` dominates.
 - **H5, wide beats long below the free width.** At equal device seconds, *w* ≤ free-width parallel non-thinking samples beat one thinking chain with a matching token budget.
 
 #### Method
@@ -1155,7 +808,7 @@ freewidth/
 ├── analyze.py        replay grid -> results.csv, disagreement.json, REPORT.md
 ├── compare.py        cross-run table (H2)
 ├── report.py         live-run statistics: Wilson CIs, McNemar + Holm, paired bootstrap, power
-├── atlas.py          free-width atlas (E6): measure across settings, roofline and predictors
+├── atlas.py          free-width atlas: measure across settings, roofline and predictors
 ├── schema.py         validation for research configs
 ├── logs.py           text / JSON logging
 ├── engine/
@@ -1179,112 +832,139 @@ freewidth/
 
 <a id="appendix-e"></a>
 
-### Appendix E. Earlier runs (100 questions each)
+### Appendix E. Related work and references
 
 <details>
 <summary>Show</summary>
 
-##### Run 2: four policies
+#### Related work
 
-**Setup.** FreeWidth 0.4.0, same 100 GSM8K questions and per-question seeds as run 1. Ladder: Qwen3.5-0.8B on GPU 0, Qwen3.5-4B on GPU 1, fp16, transformers with `flash-linear-attention`. Calibration: 0.8B free width 16 (R² 0.997), 4B free width 4 (R² 0.998), reproducing run 1. All numbers are measured live. Raw data: `results/t4_gsm8k_4way_2026-11-16/bench_rows.jsonl`.
+**Near-free parallelism and latency models.**
+- **He et al. (2026)** define near-free parallelism: the largest N with T(N) ≤ (1+ε)·T(1), with ε = 0.2, where N counts decode positions per forward pass (speculative decoding, multi-token prediction, diffusion LLMs), on A800, H800 and H20 GPUs with vLLM and SGLang.
+  - They explain the boundary by idle compute for dense FFNs, and by kernel tile granularity for MoE layers and attention.
+  - A roofline estimate over-predicts the boundary by 2.4× to 23×.
+  - FreeWidth uses the same criterion for independent samples.
+- **Fitted latency models.**
+  - EdgeReasoning (Jetson Orin) fits a decode-latency model of the same form as ours at width 1, and uses it to choose token budgets.
+  - SLIM fits a per-GPU model in batch size and sequence lengths, to choose serving batch sizes.
+  - Kinetics chooses the number of samples for best-of-N from an analytic cost that assumes large serving batches.
+- **Latency predictors**, relevant to the atlas: NeuSight, KernelSight-LM, GenZ, LLMCompass, Vidur and LLM-Viewer predict latency on unseen GPUs or kernels. None of them targets the near-free boundary itself.
+- **Batch saturation:** *Mind the Memory Gap* studies the saturation ("knee") batch size in large-batch serving.
+- **Hybrid and state-space models:**
+  - M1 sweeps batch sizes for a Mamba hybrid on an H100.
+  - Mitra et al. measure state-space and hybrid models on an RTX 4090 and a Jetson at batch size 1.
+  - No batch-latency sweep for a Gated-DeltaNet hybrid was found.
 
-###### Main table
+**Resource-aware test-time scaling.**
+- **ATEST (2026), the closest competitor:** stops sampling online using live GPU load and measured energy, on an A100 and an L40S.
+- **Measured costs on constrained hardware, used to characterise trade-offs:**
+  - EdgeReasoning;
+  - mobile-NPU TTS (EuroSys 2026);
+  - *Sample Count Is Not Enough*: batched candidate generation uses 4.6–4.9× less energy than serial calls;
+  - *The Energy Cost of Reasoning*.
+- **Latency-oriented methods:**
+  - FastTTS (ASPLOS 2026) speculates on idle GPU time while waiting on straggler beams, on consumer GPUs.
+  - Latency-aware TTS (Findings of EMNLP 2025) shows that latency-optimal and compute-optimal scaling differ.
+  - *Efficient Reasoning on the Edge* covers related techniques on Qualcomm hardware.
+- **Compute-optimal scaling under FLOPs:** Snell et al., Wu et al., Large Language Monkeys, and *When To Solve, When To Verify*.
 
-| policy | accuracy (95% CI) | mean s | median s | p90 s | mean J | big model wrote an answer |
-|---|---|---|---|---|---|---|
-| **big_sc** (4B alone, 8 samples, vote) | **0.93** (0.88–0.98) | 37.9 | 31.0 | 78.6 | 2,579 | 100% |
-| **overlap** | **0.88** (0.81–0.94) | **32.2** | **18.7** | **73.7** | 2,694 | 28% |
-| freewidth | 0.80 (0.72–0.88) | 40.2 | 18.8 | 102.5 | 2,631 | 5% |
-| repair (0.4.0) | 0.71 (0.62–0.80) | 38.1 | 18.6 | 101.6 | 2,501 | 1% |
+**Early stopping and in-batch truncation.**
+- **Sequential adaptive stopping:**
+  - Adaptive-Consistency, ReASC and CGES use a Beta or Bayesian posterior.
+  - ESC stops when a window of samples agrees.
+  - ConSol uses a sequential probability ratio test, and shows that repeated checking inflates the error rate of Adaptive-Consistency's rule.
+  - CASE, RASC, DeepConf and Certaindex also stop early.
+- **Concurrent samples that stop the batch and cancel the rest:**
+  - short-m@k (stop at the first *m* finished);
+  - First Finish Search (*m* = 1);
+  - SART;
+  - **DUCHESS** (a fixed agreement quorum, the closest to QuorumStop);
+  - Parallel-Probe and MARS (which force partial answers from unfinished samples);
+  - Funnel of Thoughts.
+- **Truncation by quality signals:** ST-BoN, Speculative Rejection and Slim-SC.
 
-![4-way](docs/figures/t4_gsm8k_4way.png)
+**Verification and cascades.**
+- **Single-pass P(Yes) verification** is the GenRM formulation.
+- **Large-model prefill judging of small-model output** is used by SpecReason (which names overlapping the two models as future work) and SpecAgent.
+- **Asynchronous and streaming verification:** ATTS (asynchronous draft sampling and target verification), and streaming multi-sequence verifiers (MSV), which stop as soon as one candidate passes.
+- **Cascades:** FrugalGPT, speculative cascades, C3PO, AutoMix, and mixture-of-thought consistency cascades, which escalate from a weak model to a strong one on low agreement among the weak model's samples. The last is the closest to `overlap`'s disagreement trigger.
+- **Comparison with `overlap`:** no published system was found that runs per-candidate verification on a second GPU concurrently with the small model's sampling, with veto and speculative start and cancel of the large model.
 
-###### Paired comparisons (same questions; exact McNemar; bootstrap CI on per-question time differences)
+**Error localisation and repair.**
+- Speculative-decoding verification (find the first rejected token; the target writes it; the draft continues) is the structural template for Read-Locate-Fork.
+- Decision-token correction (Shen et al. 2026), StepBack, SpecAgent, R2R and MentorCollab localise and repair errors at the token or step level.
 
-These are uncorrected p-values. Overlap vs freewidth and overlap vs big_sc were the two comparisons that mattered for this run. After Holm correction over those two, overlap vs freewidth is **p = 0.077**: suggestive, not significant. The full corrected table: `python -m freewidth report results/t4_gsm8k_4way_2026-11-16 --out <dir> --primary overlap:freewidth,overlap:big_sc`.
+**Verifier bias.**
+- Khullar et al. (2026) define self-attribution bias in monitors, and find it weak for content written by another model.
+- Tsui (2025) documents the self-correction blind spot.
+- Self-preference in LLM judges is studied by Panickssery et al. (2024).
 
-| A → B | B wins / loses | p | Δ mean seconds (95% CI) |
-|---|---|---|---|
-| freewidth → **overlap** | 10 / 2 | **0.039** | **−8.0 (−13.7 to −2.5)** |
-| freewidth → big_sc | 16 / 3 | **0.004** | −2.3 (−9.3 to +4.4) |
-| overlap → big_sc | 7 / 2 | 0.18 | +5.7 (+0.6 to +10.6) |
-| freewidth → repair | 0 / 9 | **0.004** | −2.1 (−5.0 to +0.2) |
+**Statistical practice.**
+- Miller (2024) recommends standard errors, paired analysis and power analysis for LLM evaluations.
+- Hochlehnert et al. (2025) show seed variance of 5–15 points on reasoning benchmarks.
+- van Miltenburg et al. (2021) propose pre-registration for NLP research.
 
-**Reproducibility.** `freewidth` scored 0.78 in run 1 and 0.80 in run 2 on the same questions and seeds. It gave the same answer on 96 of 100 questions.
+#### References
 
-###### Findings
+- Aggarwal et al. *Let's Sample Step by Step: Adaptive-Consistency for Efficient Reasoning.* EMNLP 2023.
+- Agrawal et al. *Vidur: A Large-Scale Simulation Framework for LLM Inference.* MLSys 2024. arXiv:2405.05465.
+- Bondarenko et al. *Efficient Reasoning on the Edge.* arXiv:2603.16867.
+- *FastTTS: Accelerating Test-Time Scaling for Edge LLM Reasoning.* ASPLOS 2026. arXiv:2509.00195.
+- He, Zhang, Liu, Zhou, Liu. *How Much Parallelism Is "Free"? A Principle of Near-Free Parallelism for Parallel Decoding.* arXiv:2605.30851.
+- Hao et al. *Scaling LLM Test-Time Compute with Mobile NPU on Smartphones.* EuroSys 2026. arXiv:2509.23324.
+- Kashaniyan, Jannesari. *ATEST: Adaptive Resource-Aware Test-Time Scaling for LLM Inference.* arXiv:2610.25519.
+- Kubwimana, Huang. *EdgeReasoning: Characterizing Reasoning LLM Deployment on Edge GPUs.* arXiv:2511.01866.
+- *KernelSight-LM: A Kernel-Level LLM Inference Simulator.* arXiv:2606.28565.
+- *Mind the Memory Gap: Unveiling GPU Bottlenecks in Large-Batch LLM Inference.* arXiv:2503.08311.
+- *Sample Count Is Not Enough: Candidate-Generation Strategy Shapes the Energy and Performance of LLM Test-Time Scaling.* arXiv:2609.19499.
+- *SLIM: Saturation-Aware Lightweight Performance Modeling for LLM Serving.* arXiv:2607.29575.
+- Sun et al. *Fast Best-of-N Decoding via Speculative Rejection.* NeurIPS 2024. arXiv:2410.20290.
+- Xiong et al. *ATTS: Asynchronous Test-Time Scaling via Conformal Prediction.* ICLR 2026. arXiv:2509.15148.
+- Chen, Zaharia, Zou. *FrugalGPT.* 2023.
+- Fu, Wang, Zhang, Tian, Zhao. *Deep Think with Confidence.* ICLR 2026. arXiv:2508.15260.
+- Hassid, Synnaeve, Adi, Schwartz. *Don't Overthink It: Preferring Shorter Thinking Chains.* arXiv:2505.17813.
+- *Faster and Better LLMs via Latency-Aware Test-Time Scaling.* Findings of EMNLP 2025.
+- Narasimhan et al. *Faster Cascades via Speculative Decoding.* ICLR 2025.
+- Sadhukhan et al. *Kinetics: Rethinking Test-Time Scaling Laws.* NeurIPS 2025. arXiv:2506.05333.
+- Shen et al. *Reasoning Can Be Restored by Correcting a Few Decision Tokens.* arXiv:2605.16874.
+- Singhi et al. *When To Solve, When To Verify.* COLM 2025. arXiv:2504.01005.
+- Snell, Lee, Xu, Kumar. *Scaling LLM Test-Time Compute Optimally Can Be More Effective than Scaling Model Parameters.* ICLR 2025. arXiv:2408.03314.
+- *StepBack: Step-Level Error-Localized Resampling for Efficient Test-Time Reasoning.* arXiv:2611.08403.
+- *Trajectory-Level Speculation with Semantic Verification for Tool-Using Agents* (SpecAgent). arXiv:2610.21463.
+- Tsui. *Self-Correction Bench: Uncovering and Addressing the Self-Correction Blind Spot in Large Language Models.* arXiv:2507.02778.
+- Wang et al. *Self-Consistency Improves Chain of Thought Reasoning.* ICLR 2023.
+- Wu et al. *Inference Scaling Laws.* arXiv:2408.00724.
+- Agarwal, Sengupta, Chakraborty. *First Finish Search.* arXiv:2505.18149.
+- Aghazadeh et al. *Confidence-Guided Early Stopping for Efficient and Accurate Self-Consistency* (CGES). arXiv:2511.02603.
+- Brown et al. *Large Language Monkeys.* arXiv:2407.21787.
+- Chen et al. *MARS: Margin-Adversarial Risk-controlled Stopping for Parallel LLM Test-time Scaling.* arXiv:2606.12935.
+- Hochlehnert et al. *A Sober Look at Progress in Language Model Reasoning: Pitfalls and Paths to Reproducibility.* COLM 2025. arXiv:2504.07086.
+- Hong et al. *Slim-SC: Thought Pruning for Efficient Scaling with Self-Consistency.* arXiv:2509.13990.
+- Jiang, Shahout, Du, Mitzenmacher, Yu. *Intra-Request Branch Orchestration for Efficient LLM Reasoning* (DUCHESS). arXiv:2509.24957.
+- Jin, Wei, Brooks. *The Energy Cost of Reasoning: Analyzing Energy Usage in LLMs with Test-time Compute.* arXiv:2505.14733.
+- Khullar, Hopkins, Wang, Roger. *Self-Attribution Bias: When AI Monitors Go Easy on Themselves.* arXiv:2603.04582.
+- Kim, Yang, Min, Jung. *Reliability-Aware Adaptive Self-Consistency* (ReASC). arXiv:2601.02970.
+- Lee et al. ConSol (sequential probability ratio test over the top-two answers). arXiv:2503.17587.
+- Lee, Phanishayee, Mahajan. *Forecasting GPU Performance for Deep Learning Training and Inference* (NeuSight). ASPLOS 2025. arXiv:2407.13853.
+- Li et al. *Escape Sky-high Cost: Early-stopping Self-Consistency for Multi-step Reasoning* (ESC). ICLR 2024. arXiv:2401.10480.
+- Miller. *Adding Error Bars to Evals: A Statistical Approach to Language Model Evaluations.* arXiv:2411.00640.
+- Mitra et al. *Characterizing State Space Model and Hybrid Language Model Performance with Long Context.* ISPASS 2026. arXiv:2507.12442.
+- Panickssery, Bowman, Feng. *LLM Evaluators Recognize and Favor Their Own Generations.* arXiv:2404.13076.
+- Park et al. *Funnel of Thoughts.* arXiv:2608.15065.
+- *SpecReason: Fast and Accurate Inference-Time Compute via Speculative Reasoning.* NeurIPS 2025. arXiv:2504.07891.
+- *Parallel Test-Time Scaling with Multi-Sequence Verifiers* (MSV). arXiv:2603.03417.
+- Ouyang, Kim. *StepBack.* NeurIPS 2026. arXiv:2611.08403.
+- van Miltenburg, van der Lee, Krahmer. *Preregistering NLP Research.* NAACL 2021. arXiv:2103.06944.
+- Wang et al. *M1: Towards Scalable Test-Time Compute with Mamba Reasoning Models.* arXiv:2504.10449.
+- Wang, Jiang, Cui, Fu. *Thinking Short and Right Over Thinking Long: Serving LLM Reasoning Efficiently and Accurately* (SART). arXiv:2505.13326.
+- Wang et al. *Sampling-Efficient Test-Time Scaling: Self-Estimating the Best-of-N Sampling in Early Decoding* (ST-BoN). NeurIPS 2025. arXiv:2503.01422.
+- Wang, Wang, Feng, Hajishirzi, Tsvetkov. *MentorCollab.* arXiv:2602.05307.
+- Yue et al. *Large Language Model Cascades with Mixture of Thought Representations for Cost-Efficient Reasoning.* ICLR 2024. arXiv:2310.03094.
+- Zhang et al. *Generative Verifiers: Reward Modeling as Next-Token Prediction* (GenRM). ICLR 2025. arXiv:2408.15240.
+- Zheng et al. *Parallel-Probe.* arXiv:2602.03845.
+- Fu et al. *Roads to Rome* (R2R). NeurIPS 2025.
 
-1. **Overlap is the best ladder.** It is more accurate than `freewidth` (+8 points; p = 0.039 uncorrected, 0.077 after Holm over the two primary comparisons, so suggestive until E1's 300 questions) and faster (−8.0 s mean, CI excludes 0), with a 28% lower p90. On the 20 hard questions (those `freewidth` could not settle by quorum), it was 43 s faster on average (68.8 s vs 111.8 s) at similar accuracy (0.80 vs 0.85). **H6 supported.**
-2. **The veto works.** On 13 questions the big model vetoed the small model's confident majority. On those questions, `freewidth`'s final answer was right 8 times; `overlap`'s was right 12 times. Most of overlap's gain comes from questions the small model had "already settled" (accuracy 0.79 → 0.90 on that set): confident-but-wrong majorities caught by streaming verification. **H7 supported.**
-3. **The big model alone is the most accurate.** `big_sc` reaches 0.93. That is significantly better than `freewidth` (p = 0.004), and not significantly better than `overlap` (+5 points, p = 0.18). `overlap` is faster: 5.7 s lower mean, about 12 s lower median, and 5 s lower p90. Energy per question is within noise across all four. **H9, "the big model is better as a reader than a writer", is refuted on accuracy.** What survives is a latency trade-off: `overlap` answers the typical question in about 60% of `big_sc`'s median time, at an accuracy cost that this sample cannot distinguish from zero.
-4. **Read-Locate-Fork failed, and the cause is informative.** Version 0.4.0 showed the candidate solution to the big model as **its own assistant turn**. In that framing, the same 4B model gave P(Yes) ≥ 0.95 to 75% of candidates (median 0.99). In `freewidth`'s third-party framing ("Proposed solution: … is it correct?"), the median was 0.10. Consequences:
-   - 19 candidates were accepted as "verified", and only 42% of them were correct.
-   - The locate-and-fork step ran on only one question.
-
-   This is the self-correction blind spot (Tsui 2025: models fail to correct their own errors but fix identical errors from external sources) showing up as verifier miscalibration. **H8 was therefore not tested.** Version 0.4.1 reads the candidate as a third-party solution in the same single pass.
-
-###### What this changes
-
-- **Where to run what.** On a T4 x2, use `overlap` when latency matters (median 18.7 s, 88%). Use the big model alone when accuracy matters most (93%, median 31 s).
-- **Verifier prompt design.** Verifier framing is not a detail. The same model and the same candidates go from a discriminating verifier to a rubber stamp when the candidate is presented as the model's own answer.
-- **Device use (caveat).** Only `overlap` used both GPUs at the same time. `freewidth` and `repair` use them in turn. `big_sc` ran all 8 samples as one batch on GPU 1 (past the 4B's free width of 4) with GPU 0 idle and no early stopping. That favours the two-GPU ladders on latency. The fair baseline, `big_sc2` (4B on both GPUs, 4 samples each, shared QuorumStop), was added in 0.5.0 for the next run.
-- **Limits.** 100 questions, one dataset, one GPU type. The paired tests are the reliable part. The overlap vs big_sc accuracy gap needs about 400–500 questions to resolve.
-
-###### Next
-
-1. Rerun `repair` (0.4.1, third-party read) to actually test H8, and compare `overlap` against `big_sc2` in the same session.
-2. Run 300–500 questions for `overlap` vs `big_sc`.
-3. Run MATH-500, where the 4B model alone is slower and the ladder's advantage may grow.
-
-##### Run 1: first live results
-
-**Setup.** FreeWidth 0.2.2 live engine. Ladder: Qwen3.5-0.8B on GPU 0 → Qwen3.5-4B on GPU 1, fp16, transformers with `flash-linear-attention` (causal-conv1d not available on T4). Workload: 100 GSM8K test questions (fixed sample, seed 0), temperature 0.7, up to 1024 new tokens per sample. All times and energies are measured live on the device (wall clock, NVML). Raw data: `results/t4_gsm8k_2026-11-15/`.
-
-###### Calibration
-
-| model | free width | fit R² |
-|---|---|---|
-| Qwen3.5-0.8B | 16 | 0.998 |
-| Qwen3.5-4B | 4 | 0.997 |
-
-![free width](docs/figures/t4_free_width.png)
-
-At a 128-token prompt with 128 new tokens, 16 parallel samples on the 0.8B model take 1.14× the time of one sample (5.99 s vs 5.24 s). One sample from the 4B model takes 7.65 s. Free width also depends on the software stack: with the reference PyTorch kernels instead of `flash-linear-attention`, the 4B model's free width was 2.
-
-###### Main table
-
-| policy | accuracy (95% CI) | mean s | median s | p90 s | mean J | mean tokens | escalated | verified |
-|---|---|---|---|---|---|---|---|---|
-| single¹ | 0.53 | 22.1 | — | 41.9 | 915 | 531 | 0 | 0 |
-| sc (8 samples) | 0.68 (0.59–0.77) | 38.5 | 45.5 | 46.4 | 2,529 | 4,255 | 0 | 0 |
-| hwave | 0.79 (0.71–0.87) | 48.5 | 19.1 | 139.9 | 3,232 | 10,025 | 0.18 | 0 |
-| **freewidth** | **0.78 (0.70–0.86)** | **41.5** | **19.2** | **105.2** | **2,713** | 9,591 | 0.07 | 0.11 |
-
-¹ Same 100 questions, measured in an earlier commit with identical code paths. Per-question rows were not kept, so it is excluded from the paired tests.
-
-![live results](docs/figures/t4_gsm8k_live.png)
-
-###### Findings
-
-1. **Free width shows up live.** `sc` generates 8× the tokens of `single` (and roughly 8× the FLOPs), but costs 1.75× the time and 2.8× the energy, for +15 accuracy points.
-2. **QuorumStop + escalation beats plain voting on accuracy at similar mean cost.** Against `sc` on the same questions, `freewidth` wins 15 and loses 5 (exact McNemar p = 0.041). The mean-time difference is +3.0 s (bootstrap 95% CI −4.6 to +11.4, not significant). Median time drops from 45.5 s to 19.2 s, because 73% of questions finish in one wave. In `hwave`, 96 of 151 waves stopped early on a quorum, and 43% of all generated rows were cut before finishing.
-3. **Prefill verification replaces most big-model decoding at no accuracy cost.** Against `hwave`, `freewidth` has the same accuracy (2 wins, 3 losses, p = 1.0) and is 7.0 s faster per question (CI −12.6 to −2.3 s), with a 25% lower p90 and 16% less energy. Escalations to 4B decoding fall from 18% to 7%. A verification pass costs 3.6 s, compared with about 150 s for an escalated question, and big-model decode time per question falls from 11.2 s to 3.3 s.
-4. **Stragglers dominate fixed-width voting.** In 61 of 100 `sc` waves, at least one sample ran to the 1024-token cap. Those waves averaged 46.0 s, against 26.8 s for waves where every sample finished.
-
-###### Weak spots
-
-- **The verifier's "accept" is only moderately reliable.** It accepted 11 candidates and 7 of them were correct; the accepted wrong answers scored P(Yes) between 0.78 and 0.91. Its "reject" was reliable: 6 of the 7 rejected questions were then solved by escalation. Every correct acceptance scored at least 0.82 and four scored at least 0.98, so a higher `verify_accept` (for example 0.95) is the next thing to test.
-- **Runaway generations.** 14–17% of all samples hit the 1024-token cap. They rarely finish with an answer, and they set the wave time.
-- **Answer format.** Question 906 accepted "4 blue and 6 red shoe boxes" as the answer, which the numeric grader can't match. Answer formatting matters to the grader as well as to the verifier.
-- **Small sample.** 100 questions, one dataset, one GPU type, one seed; accuracy CIs are about ±9 points. The paired tests above are the right comparison; absolute accuracies should be read with the CIs.
-
-###### Next experiments
-
-1. Rerun `freewidth` with `verify_accept: 0.95`.
-2. Add a repetition/runaway stop, or lower `max_new_tokens`, to cut length-capped stragglers.
-3. Scale to 300–500 GSM8K questions, then MATH-500.
-4. Run the dense Qwen3 ladder (`engine_t4_dense.yaml`) as the H2 control.
-5. Compare these live numbers with the offline replay pipeline's predictions for the same models.
+The bibliography of the offline pipeline is in [Appendix C](#appendix-c).
 
 </details>
 
@@ -1294,12 +974,11 @@ At a 128-token prompt with 128 new tokens, 16 parallel samples on the 0.8B model
 
 ```bibtex
 @software{freewidth2026,
-  author  = {Tejas},
-  title   = {FreeWidth: Hardware-Aware Test-Time Compute for Small Language Models},
-  year    = {2026},
-  url     = {https://github.com/Tejascodz/freewidth},
-  version = {0.7.4}
+  author = {Tejas},
+  title  = {FreeWidth: Hardware-Aware Test-Time Compute for Small Language Models},
+  year   = {2026},
+  url    = {https://github.com/Tejascodz/freewidth}
 }
 ```
 
-Released under the MIT License. Security policy: [SECURITY.md](SECURITY.md). Contribution rules: [CONTRIBUTING.md](CONTRIBUTING.md). Version history: [CHANGELOG.md](CHANGELOG.md).
+Released under the MIT License · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
