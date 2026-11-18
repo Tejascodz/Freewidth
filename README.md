@@ -21,7 +21,15 @@ Both pre-registered superiority claims failed:
 - `overlap` is 6.3 points less accurate than the large model alone (Holm-adjusted p = 6×10⁻⁴).
 - The proposed Read-Locate-Fork repair policy is less accurate and slower than `overlap`.
 
-Error analysis attributes almost all of `overlap`'s deficit to a single acceptance path. On 28 of 300 questions, a small-model majority was accepted after the verifier was uncertain; `overlap` answered 13 of them correctly, the large model 26. A follow-up (H10) that escalates instead is implemented and pre-registered.
+Error analysis attributes almost all of `overlap`'s deficit to a single acceptance path. On 28 of 300 questions, a small-model majority was accepted after the verifier was uncertain; `overlap` answered 13 of them correctly, the large model 26.
+
+**Pre-registered follow-up (H10, §5.6).** `overlap` was changed to escalate those questions to the 4B instead of accepting them, and run on the same 300 questions. Both pre-registered criteria were met:
+- **Accuracy:** 93.7% (90.3–95.9). That is not significantly below the large model alone (−2.0 points, 95% CI −4.7 to +0.7, Holm p = 0.21), and significantly above the original `overlap` (+4.3 points, Holm p = 0.002).
+- **Latency and energy:** 6.2 s lower mean latency than the large model alone (95% CI −9.3 to −3.1), about half the median latency (20.9 s vs 40.2 s), and 44% less energy per question.
+
+Two qualifiers apply:
+- The large-model baseline comes from an earlier Kaggle session. As pre-registered, the result is confirmed only after a same-session rerun (E1c).
+- "Not significantly lower" is not equivalence: the 95% interval still allows a deficit of up to 4.7 points.
 
 **Positioning.** A literature review covering about 90 papers (November 2026, §6 and §10) found that **none of FreeWidth's components is new on its own**:
 - the free-width criterion follows He et al. (2026);
@@ -274,7 +282,45 @@ Runs 1–2 used 100 questions each and the one-GPU `big_sc` baseline ([Appendix 
 - **Veto (H7, run 2).** On the 13 questions where the verifier vetoed the small model's majority, `overlap` was right on 12; the sequential ladder on 8.
 - **Two-GPU baseline speed.** On identical questions, `big_sc2` (two GPUs, Python threads) had a *higher* median than `big_sc` (one GPU): 40.3 s vs 31.0 s (§7).
 
-### 5.6 Hypothesis status
+### 5.6 Follow-up: escalating uncertain majorities (H10, E1b)
+
+**Run.** FreeWidth 0.7.3, `overlap` with `quorum_accept: false`.
+- Same 300 GSM8K questions and seeds as E1, in a new Kaggle session (T4 x2).
+- Calibration matched E1: free width 16 (R² 0.997) and 4 (R² 0.998).
+- Pre-registered in [Appendix A](#appendix-a). Statistics come from the pre-registered command: `results/t4_gsm8k_H10/vs_E1/REPORT.md`.
+
+| policy | accuracy (95% CI) | mean s | median s | p90 s | energy (kJ) | large model decoded |
+|---|---|---|---|---|---|---|
+| `big_sc2` (E1) | 95.7% (92.7–97.5) | 43.4 | 40.2 | **62.0** | 5.71 | 100% |
+| **`overlap`, H10** | **93.7%** (90.3–95.9) | **37.2** | 20.9 | 74.6 | 3.19 | 43% |
+| `overlap` (E1) | 89.3% (85.3–92.3) | 34.5 | **19.3** | 73.9 | **2.85** | 34% |
+
+<p align="center"><img src="results/t4_gsm8k_H10/vs_E1/accuracy_latency.png" width="600" alt="Accuracy versus median latency for big_sc2, overlap in E1 and H10, and repair"></p>
+
+*Figure 4.* Accuracy (Wilson 95% interval) against median latency, E1 and H10.
+
+**Pre-registered tests** (Holm over the two):
+
+| comparison (A → B) | B better / worse | Holm p | Δ accuracy, points (95% CI) | Δ mean s (95% CI) | criterion | outcome |
+|---|---|---|---|---|---|---|
+| `big_sc2` → `overlap` H10 | 5 / 11 | 0.21 | −2.0 (−4.7, +0.7) | −6.2 (−9.3, −3.1) | not significantly less accurate *and* faster | **met** |
+| `overlap` E1 → `overlap` H10 | 14 / 1 | 0.002 | +4.3 (+2.0, +7.0) | +2.8 (+1.3, +4.3) | more accurate | **met** |
+
+**The change did what it was designed to do, and nothing else.**
+- On the 28 questions that E1 accepted on an uncertain majority, H10 escalated 27 (trigger `uncertain_quorum`) and answered 27 correctly. E1 answered 13 correctly; `big_sc2` answered 26.
+- Those questions now take 56.5 s on average instead of 19.0 s.
+- On the other 272 questions, H10 gave the same answer as E1 on 271 (255 vs 254 correct). This also shows the policy is repeatable across sessions.
+- The estimate written before the run (an upper bound of about 93.7%, at +4–5 s mean) matched the outcome (93.7%, +2.8 s).
+
+**Where the remaining gap is.** All 11 questions that `big_sc2` answered correctly and H10 did not were *verified accepts*: the 4B gave P(Yes) ≥ 0.95 to a wrong answer with at least two votes. The verifier's confident errors are now the main limit, not the acceptance rule.
+
+**What this does and does not establish.**
+- **Cross-session baseline.** `big_sc2` comes from E1's session. Overlap was repeatable across sessions (271 of 272 identical answers), but the pre-registration requires a same-session rerun (E1c) before the result is treated as confirmed.
+- **Not equivalence.** "Not significantly less accurate" is not equivalence. A McNemar test would need about 1,000 questions to detect a 2-point difference with 80% power.
+- **Tail latency is worse.** The p90 latency (74.6 s) is higher than `big_sc2`'s (62.0 s): escalated questions pay for the small model's attempt first.
+- **Cost of the extra escalations.** The large model now decodes on 43% of questions instead of 34%, and mean energy rose from 2.85 to 3.19 kJ. That is still 44% below `big_sc2`.
+
+### 5.7 Hypothesis status
 
 | id | hypothesis | status | evidence |
 |---|---|---|---|
@@ -283,7 +329,7 @@ Runs 1–2 used 100 questions each and the one-GPU `big_sc` baseline ([Appendix 
 | H7 | A live veto rescues confident-but-wrong majorities | supported | 12/13 vs 8/13 (run 2; small n) |
 | H8 | Read-Locate-Fork replaces large-model writing | refuted | §5.2–5.3 |
 | H9 | The large model is better used as a reader than a writer | refuted | −6.3 points, Holm p = 6.2×10⁻⁴ |
-| H10 | Escalating uncertain-verifier quorums closes the gap | pending | E1b, [Appendix A](#appendix-a) |
+| H10 | Escalating uncertain-verifier quorums closes the gap | **supported, pending same-session confirmation (E1c)** | both pre-registered criteria met (§5.6); cross-session comparison |
 | H11–H15 | Free-width atlas: roofline gap, size dependence, predictability, hybrid vs dense, held-out accuracy of the cost model | pending | E6, [Appendix A](#appendix-a) |
 | H1–H5 | Offline cost-model and strategy hypotheses | not yet run | [Appendix C](#appendix-c) |
 
@@ -292,14 +338,17 @@ Runs 1–2 used 100 questions each and the one-GPU `big_sc` baseline ([Appendix 
 **What the evidence supports.**
 1. **Free width is real, large on small models, and stable.** It changes how parallel sampling should be priced on single-tenant hardware.
 2. **Concurrency matters more than cleverness.** Putting the second GPU to work while the small model decodes (streaming verification, speculative escalation) reduced latency on hard questions by about 40%.
-3. **A small-to-large ladder is a trade-off, not a free lunch.** On GSM8K with a 0.8B/4B pair, the large model alone is more accurate. The ladder buys half the latency and energy.
+3. **The acceptance rule decides whether a small-to-large ladder is a trade-off or close to a free lunch.**
+   - In E1, accepting a small-model majority while the verifier was unsure cost 6.3 points against the large model alone.
+   - Escalating those cases instead (H10) brought the ladder within 2 points (not significant). It kept about half the median latency and 44% less energy, at a worse p90.
+   - The remaining errors are the verifier's confident mistakes.
 
 **What it does not support.**
 - **That a single verifier prompt is a reliable gate.** Prefill verification is cheap, but its calibration depends on framing (§5.4). A threshold between 0.2 and 0.95 left a band in which a majority was accepted and was wrong more often than right.
 
 **Practical guidance (T4 class, two GPUs):**
-- Use `big_sc2` when accuracy is the priority.
-- Use `overlap` when latency or energy is constrained and a few points of accuracy are acceptable.
+- Use `big_sc2` when worst-case accuracy and p90 latency matter most.
+- Use `overlap` with `quorum_accept: false` (H10) for about half the median latency and 44% less energy. Its accuracy was within 2 points of `big_sc2` (not significant; same-session confirmation pending).
 - Do not use `repair` in its current form.
 
 **Novelty, stated narrowly.** A systematic review (November 2026; about 90 papers, each checked against the paper's own text where possible; arXiv abstract pages were unavailable, so PDF and HTML versions were used) gives the following verdict for each component:
@@ -359,7 +408,7 @@ These are listed as planned work in [Appendix A](#appendix-a).
 - NVML energy covers the GPUs a policy used. Idle GPUs are not charged, which favours one-GPU policies.
 
 **Statistics**
-- Cross-session comparisons (§5.5, and H10 against E1) are exploratory unless repeated within one session.
+- Cross-session comparisons are exploratory unless repeated within one session (§5.5). H10 against E1 was pre-registered as primary but is cross-session, so it counts as confirmed only after the same-session rerun (E1c).
 - Runs 1–2 (100 questions) were underpowered for differences of about 5 points.
 
 **Verifier**
@@ -595,7 +644,7 @@ Each experiment's primary comparisons, sample size and pass/fail criteria are wr
 |---|---|---|---|
 | E0 | first live results | T4 x2, GSM8K, 100 q | done (runs 1–2): `docs/results-t4-gsm8k*.md` |
 | E1 | does overlap still win against a fair two-GPU big-model baseline; does repair work once its verifier is fixed | T4 x2, GSM8K, 300 q | **done**: E1.1 failed (overlap is 6.3 points less accurate, faster); E1.2 failed (repair worse than overlap). See `docs/results-t4-gsm8k-E1.md` |
-| E1b | H10: overlap with uncertain majorities escalated (`quorum_accept: false`) | T4 x2, GSM8K, 300 q | **ready**: `scripts/kaggle_h10.sh` (about 3.5–4 h, capped at 5 h) |
+| E1b | H10: overlap with uncertain majorities escalated (`quorum_accept: false`) | T4 x2, GSM8K, 300 q | **done**: both criteria met (§5.6); 186 min |
 | E1c | process-per-GPU big_sc2 with a same-session one-GPU control | T4 x2, GSM8K, 300 q | planned (after the weekly GPU quota resets) |
 | E2 | does it hold on harder problems | T4 x2, MATH-500, 200 q | planned |
 | E3 | does it hold for another model pair | T4 x2, Qwen3.5-2B → 4B, GSM8K, 300 q | planned |
@@ -985,7 +1034,7 @@ The literature check behind this table found **short-m@k** and **DeepConf** alre
 
 #### Hypotheses (each one can be falsified)
 
-The status of each hypothesis is in [Section 5.6](#56-hypothesis-status).
+The status of each hypothesis is in [Section 5.7](#57-hypothesis-status).
 
 - **H1, regime flip.** Kendall tau(FLOPs, device seconds) is well below 1, the Pareto frontiers overlap little (Jaccard < 0.5), and the worst iso-accuracy overrun (FLOPs to device) is above 2×. *Refuted if* the frontiers match.
 - **H2, hybrids weaken Kinetics.** The KV-penalty ratio (small model sampling wide vs. big model answering once, under eFLOPs) is lower for hybrid Qwen3.5 than for dense Qwen3 at similar sizes.
@@ -1249,7 +1298,7 @@ At a 128-token prompt with 128 new tokens, 16 parallel samples on the 0.8B model
   title   = {FreeWidth: Hardware-Aware Test-Time Compute for Small Language Models},
   year    = {2026},
   url     = {https://github.com/Tejascodz/freewidth},
-  version = {0.7.3}
+  version = {0.7.4}
 }
 ```
 
