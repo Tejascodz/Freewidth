@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "freewidth"
-version = "0.8.0"
+version = "0.8.1"
 description = "Hardware-aware test-time compute for LLMs: measured per-GPU free width, small-to-big model ladders with live early stopping and cross-GPU verification, and pre-registered statistical evaluation."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -2,6 +2,9 @@
 
 All notable changes to this project. Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.1
+- README: summary figure, headline numbers and an overview diagram of `overlap`; `scripts/make_figures.py` regenerates all result figures.
+
 ## 0.8.0
 - `overlap` now escalates a small-model majority the verifier is unsure about, instead of accepting it (`quorum_accept: false` by default). The old behaviour is available as `quorum_accept: true`.
 - The README describes the current system and results only; `scripts/make_figures.py` regenerates the results figure.
