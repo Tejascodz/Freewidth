@@ -22,9 +22,10 @@ from freewidth.report import wilson  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 BLUE, ORANGE, GREEN, AMBER, GREY, INK, MUTED = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100",
                                                 "#9aa0a6", "#202124", "#5f6368")
-CALIB = "results/t4_gsm8k_2026-11-15/calibration"
-E1 = "results/t4_gsm8k_E1_2026-11-16/bench_rows.jsonl"
-H10 = "results/t4_gsm8k_H10/bench_rows.jsonl"
+RESULTS = Path("results")
+CALIB = RESULTS / "t4_gsm8k_2026-11-15" / "calibration"
+E1 = RESULTS / "t4_gsm8k_E1_2026-11-16" / "bench_rows.jsonl"
+H10 = RESULTS / "t4_gsm8k_H10" / "bench_rows.jsonl"
 RUNS = [  # (rows file, policy, label, colour, emphasised)
     (E1, "big_sc2", "4B alone, both GPUs", BLUE, True),
     (H10, "overlap", "FreeWidth overlap", GREEN, True),
