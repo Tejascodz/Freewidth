@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.4 (E1b / H10 results)
+- **H10 run complete:** `overlap` with `quorum_accept: false`, the same 300 GSM8K questions, Kaggle T4 x2, 186 min. Rows and reports are in `results/t4_gsm8k_H10/`.
+- **Both pre-registered criteria met:**
+  - against `big_sc2` (E1): −2.0 points (95% CI −4.7 to +0.7, Holm p = 0.21) and 6.2 s faster on average (95% CI −9.3 to −3.1);
+  - against E1's `overlap`: +4.3 points (Holm p = 0.002).
+- **Mechanism confirmed.** The 28 uncertain-majority questions went from 13 to 27 correct. The other 272 kept the same answer on 271.
+- **Not yet confirmed.** As pre-registered, the cross-session baseline means H10 counts as confirmed only after a same-session rerun (E1c).
+- **Remaining gap:** all 11 questions that `big_sc2` got right and H10 got wrong were confidently verified wrong answers.
+- **README:** abstract, §5.6 (new), the hypothesis table, discussion and practical guidance are updated.
+
 ## 0.7.3 (docs: systematic novelty review)
 - **Literature review.** Covered about 90 papers across eight components. The README now has a verdict for each component, a narrow statement of contribution, the related work a reviewer will expect, and about 30 new references.
 - **Newly cited closest prior work:**
