@@ -9,7 +9,7 @@ BOX = "so the answer is \\boxed{%s}"
 
 
 def _ctrl(**kw):
-    base = dict(veto_lo=0.2, accept_hi=0.95, require_verified=True, min_finished=2,
+    base = dict(veto_lo=0.2, accept_hi=0.95, require_verified=True, min_finished=2, quorum_accept=True,
                 trigger_min_finished=4, trigger_lead_prob=0.6, runaway_factor=2.0, runaway_min_finished=4)
     base.update(kw)
     return OverlapController(8, 0.9, **base)
